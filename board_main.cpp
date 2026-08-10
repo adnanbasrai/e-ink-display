@@ -1,0 +1,315 @@
+// NYC Subway arrivals board for the ELECROW CrowPanel 5.79" e-paper display
+// (ESP32-S3, 792x272, dual SSD1683).
+//
+// Shows Manhattan-bound arrivals for the 2/3/4/5 at Nevins St and the B/Q at
+// DeKalb Av, refreshed every minute from the MTA's GTFS-realtime feeds
+// (no API key required).
+//
+// Board settings (Arduino IDE): "ESP32S3 Dev Module", PSRAM: "OPI PSRAM",
+// Partition Scheme: "Huge APP". See README.md.
+
+#include <Arduino.h>
+#include <WiFi.h>
+#include <WiFiClientSecure.h>
+#include <HTTPClient.h>
+#include <time.h>
+
+#include "config.h"
+#include "gtfs_rt.h"
+#include "display.h"
+#include "weather.h"
+#include "EPD.h"
+
+#if __has_include("secrets.h")
+#include "secrets.h"
+#else
+#error "Copy secrets.h.example to secrets.h and fill in your WiFi credentials."
+#endif
+
+#define EPD_POWER_PIN 7      // panel power enable -- must be HIGH or screen stays blank
+#define POWER_LED_PIN 41
+
+#define FEED_BUF_SIZE (512 * 1024)   // alerts feed alone is ~430 KB
+#define NYC_TZ "EST5EDT,M3.2.0/2,M11.1.0/2"
+
+static const char* FEED_URLS[NUM_FEEDS] = { FEED_IRT, FEED_BDFM, FEED_NQRW, FEED_ACE };
+
+uint8_t ImageBW[27200];          // (800/8) x 272 framebuffer
+static uint8_t* feedBuf = nullptr;
+
+// Last successful arrivals per route; kept when a fetch fails so the board
+// degrades to slightly-stale times instead of blanking out.
+static RouteArrivals arrivals[NUM_ROUTES];
+static RouteAlert routeAlerts[NUM_ROUTES];
+static uint32_t lastFetchOkMs[NUM_FEEDS] = {0};
+static int refreshCount = 0;
+static WeatherInfo weather = {};
+static uint32_t lastWeatherMs = 0;
+
+// ---------- e-paper push helpers ----------
+
+static void pushFull() {
+  EPD_FastMode1Init();
+  EPD_Display_Clear();
+  EPD_Update();
+  EPD_FastMode1Init();
+  EPD_Display(ImageBW);
+  EPD_FastUpdate();
+  EPD_WriteOldRAM(ImageBW);    // partials diff against this frame from now on
+  EPD_DeepSleep();
+}
+
+// Two-pass anti-ghosting cycle. Pass 1 flushes the panel to white with a
+// full inversion update (kills any residue). Pass 2 draws the frame using
+// Elecrow's exact proven sequence (re-init + fast update -- the OTP full
+// update never renders content on this panel, only the fast one does).
+// Because the draw always starts from a freshly flushed white panel,
+// the fast waveform has nothing to smear -- ghosting cannot accumulate.
+static void pushClean() {
+  uint32_t t = millis();
+  EPD_FastMode1Init();
+  EPD_Display_Clear();         // new RAM = white, old RAM = black (max drive)
+  EPD_Update();
+  Serial.printf("  clear+update %lu ms\n", millis() - t);
+
+  t = millis();
+  EPD_FastMode1Init();         // panel needs a re-init between two updates
+  EPD_Display(ImageBW);
+  EPD_FastUpdate();
+  Serial.printf("  draw+update %lu ms\n", millis() - t);
+  EPD_WriteOldRAM(ImageBW);
+  EPD_DeepSleep();
+}
+
+static void splash(const char* line1, const char* line2) {
+  Paint_Clear(WHITE);
+  EPD_ShowString(24, 90, line1, 48, BLACK);
+  if (line2) EPD_ShowString(24, 160, line2, 24, BLACK);
+  pushFull();
+}
+
+// ---------- network ----------
+
+static bool ensureWiFi() {
+  if (WiFi.status() == WL_CONNECTED) return true;
+  WiFi.disconnect();
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  uint32_t start = millis();
+  while (WiFi.status() != WL_CONNECTED && millis() - start < 20000) delay(250);
+  return WiFi.status() == WL_CONNECTED;
+}
+
+// Fetch one GTFS-rt feed into feedBuf. Returns payload length, 0 on failure.
+static size_t fetchFeed(const char* url) {
+  WiFiClientSecure client;
+  client.setInsecure();        // MTA feed is public data; skip cert pinning
+  client.setHandshakeTimeout(10);   // seconds; a wedged TLS handshake must not hang the board
+  Serial.printf("GET %.60s\n", url);
+  HTTPClient http;
+  http.setConnectTimeout(HTTP_TIMEOUT_MS);
+  http.setTimeout(HTTP_TIMEOUT_MS);
+  if (!http.begin(client, url)) return 0;
+  int code = http.GET();
+  Serial.printf("  -> %d, %d bytes\n", code, http.getSize());
+  if (code != HTTP_CODE_OK) {
+    http.end();
+    return 0;
+  }
+
+  // Stop at Content-Length when known -- these servers use keep-alive, so
+  // waiting for connection close would burn the full idle timeout per fetch.
+  int expected = http.getSize();   // -1 when chunked/unknown
+  WiFiClient* stream = http.getStreamPtr();
+  size_t total = 0;
+  uint32_t lastData = millis();
+  while (http.connected() && millis() - lastData < (uint32_t)HTTP_TIMEOUT_MS) {
+    if (expected > 0 && total >= (size_t)expected) break;
+    size_t avail = stream->available();
+    if (!avail) { delay(10); continue; }
+    if (total + avail > FEED_BUF_SIZE) avail = FEED_BUF_SIZE - total;
+    if (!avail) break;         // buffer full
+    int n = stream->readBytes(feedBuf + total, avail);
+    if (n <= 0) break;
+    total += n;
+    lastData = millis();
+  }
+  http.end();
+  return total;
+}
+
+// Fetch + parse every feed, updating `arrivals` in place. A route's times are
+// only replaced when its feed downloads and parses successfully.
+// Fetch + parse the weather forecast into `weather` (kept on failure).
+static void updateWeather() {
+  size_t len = fetchFeed(WEATHER_URL);
+  if (!len || len >= FEED_BUF_SIZE) {
+    Serial.printf("weather fetch failed (len=%u)\n", (unsigned)len);
+    return;
+  }
+  feedBuf[len] = '\0';
+  time_t now = time(nullptr);
+  struct tm tm_now;
+  localtime_r(&now, &tm_now);
+  WeatherInfo fresh;
+  if (weatherParse((const char*)feedBuf, tm_now.tm_hour, fresh)) {
+    weather = fresh;
+    Serial.printf("weather: %dF (%d/%d) cond=%d %d%%\n", weather.curTemp,
+                  weather.hi, weather.lo, weather.cond, weather.prob);
+  } else {
+    Serial.println("weather parse failed");
+  }
+  lastWeatherMs = millis();
+}
+
+static void updateArrivals(bool withAlerts) {
+  for (int f = 0; f < NUM_FEEDS; f++) {
+    // Fresh scratch entries for the routes served by this feed.
+    RouteArrivals fresh[NUM_ROUTES];
+    size_t nFresh = 0;
+    for (int r = 0; r < NUM_ROUTES; r++) {
+      if (ROUTES[r].feedIndex != f) continue;
+      fresh[nFresh].route = ROUTES[r].route;
+      fresh[nFresh].stopId = ROUTES[r].stopId;
+      fresh[nFresh].count = 0;
+      nFresh++;
+    }
+    if (!nFresh) continue;
+
+    size_t len = fetchFeed(FEED_URLS[f]);
+    if (!len || !gtfsRtParse(feedBuf, len, fresh, nFresh)) {
+      Serial.printf("feed %d failed (len=%u)\n", f, (unsigned)len);
+      continue;                // keep previous data for these routes
+    }
+    lastFetchOkMs[f] = millis();
+
+    for (size_t i = 0; i < nFresh; i++)
+      for (int r = 0; r < NUM_ROUTES; r++)
+        if (arrivals[r].route == fresh[i].route && arrivals[r].stopId == fresh[i].stopId)
+          arrivals[r] = fresh[i];
+  }
+
+  // Service alerts (the "why isn't it running" blurbs). The feed is ~430 KB,
+  // so it's only fetched every few minutes; kept from the last good fetch
+  // on failure, same as arrivals.
+  if (!withAlerts) return;
+  RouteAlert fresh[NUM_ROUTES];
+  for (int r = 0; r < NUM_ROUTES; r++) {
+    fresh[r].route = ROUTES[r].route;
+    fresh[r].text[0] = '\0';
+  }
+  size_t len = fetchFeed(FEED_ALERTS);
+  if (len && gtfsAlertsParse(feedBuf, len, (uint32_t)time(nullptr), fresh, NUM_ROUTES)) {
+    memcpy(routeAlerts, fresh, sizeof(routeAlerts));
+  } else {
+    Serial.printf("alerts feed failed (len=%u)\n", (unsigned)len);
+  }
+}
+
+// ---------- rendering ----------
+
+static void renderBoard() {
+  time_t now = time(nullptr);
+  struct tm tm_now;
+  localtime_r(&now, &tm_now);
+
+  uint32_t oldestOk = lastFetchOkMs[0];
+  for (int f = 1; f < NUM_FEEDS; f++)
+    if (lastFetchOkMs[f] < oldestOk) oldestOk = lastFetchOkMs[f];
+
+  char clockBuf[16], bottomRight[40];
+  strftime(clockBuf, sizeof(clockBuf), "%l:%M %p", &tm_now);
+  const char* clockTrim = clockBuf[0] == ' ' ? clockBuf + 1 : clockBuf;
+  uint32_t ageMin = oldestOk ? (millis() - oldestOk) / 60000UL : 0;
+  if (!oldestOk)
+    snprintf(bottomRight, sizeof(bottomRight), "waiting for data  %s", clockTrim);
+  else if (ageMin >= 3)
+    snprintf(bottomRight, sizeof(bottomRight), "data %lu min old  %s",
+             (unsigned long)ageMin, clockTrim);
+  else
+    snprintf(bottomRight, sizeof(bottomRight), "%s", clockTrim);
+
+  displayRender(arrivals, NUM_ROUTES, now, routeAlerts, weather, refreshCount, bottomRight);
+
+  uint32_t t0 = millis();
+  pushClean();                 // white-flush + redraw, every minute
+  Serial.printf("refresh #%d took %lu ms\n", refreshCount, millis() - t0);
+  refreshCount++;
+}
+
+// ---------- arduino entry points ----------
+
+void setup() {
+  Serial.begin(115200);
+  delay(100);
+  Serial.println("SubwayBoard boot");
+
+  pinMode(EPD_POWER_PIN, OUTPUT);
+  digitalWrite(EPD_POWER_PIN, HIGH);
+  pinMode(POWER_LED_PIN, OUTPUT);
+  digitalWrite(POWER_LED_PIN, HIGH);
+
+  EPD_GPIOInit();
+  Paint_NewImage(ImageBW, EPD_W, EPD_H, Rotation, WHITE);
+  Paint_Clear(WHITE);
+
+  feedBuf = (uint8_t*)ps_malloc(FEED_BUF_SIZE);
+  if (!feedBuf) feedBuf = (uint8_t*)malloc(FEED_BUF_SIZE);
+  if (!feedBuf) {
+    splash("ERROR", "Feed buffer alloc failed - enable OPI PSRAM");
+    while (true) delay(1000);
+  }
+
+  splash("NYC Subway", "Connecting to WiFi...");
+
+  if (!ensureWiFi()) {
+    splash("No WiFi", "Check secrets.h, then press RST");
+    while (true) delay(1000);
+  }
+  Serial.printf("WiFi up: %s\n", WiFi.localIP().toString().c_str());
+
+  // NTP -- arrival math needs real epoch time.
+  configTzTime(NYC_TZ, "pool.ntp.org", "time.nist.gov");
+  uint32_t start = millis();
+  while (time(nullptr) < 1600000000 && millis() - start < 30000) delay(200);
+  Serial.printf("ntp: %ld\n", (long)time(nullptr));
+
+  for (int r = 0; r < NUM_ROUTES; r++) {
+    arrivals[r].route = ROUTES[r].route;
+    arrivals[r].stopId = ROUTES[r].stopId;
+    arrivals[r].count = 0;
+    routeAlerts[r].route = ROUTES[r].route;
+    routeAlerts[r].text[0] = '\0';
+  }
+
+  updateWeather();
+  updateArrivals(true);
+  refreshCount = 0;            // first paint is a full refresh
+  renderBoard();
+}
+
+// Each cycle is aligned to the wall clock: fetching starts ~20 s before the
+// next minute boundary, then the e-ink refresh is held until the minute
+// ticks -- so the screen flips exactly as the displayed time changes, once
+// every 60 seconds.
+void loop() {
+  time_t now = time(nullptr);
+  time_t target = (now / 60 + 1) * 60;
+  bool withAlerts = ((target / 60) % ALERTS_EVERY_MIN) == 0;
+  bool withWeather = millis() - lastWeatherMs >= WEATHER_INTERVAL_MS;
+  int prefetch = 20 + (withAlerts ? 20 : 0) + (withWeather ? 5 : 0);
+
+  while (time(nullptr) < target - prefetch) delay(200);
+
+  uint32_t t0 = millis();
+  if (!ensureWiFi()) {
+    Serial.println("WiFi reconnect failed; showing stale data");
+  } else {
+    if (withWeather) updateWeather();
+    updateArrivals(withAlerts);
+  }
+  Serial.printf("fetch took %lu ms (alerts=%d)\n", millis() - t0, withAlerts);
+
+  while (time(nullptr) < target) delay(50);
+  renderBoard();
+}
