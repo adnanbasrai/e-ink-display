@@ -40,8 +40,16 @@ WHITE = 255
 DEG = "°"
 
 # ---- font paths (same as genfont.py) ----
-HELV = "/System/Library/Fonts/Helvetica.ttc"
-SYM = "/System/Library/Fonts/Apple Symbols.ttf"
+# Default to the macOS system fonts (so the emulator renders as-is on a Mac);
+# override with env vars on Linux/Windows or in the render-service container.
+# macOS ships regular + bold in one Helvetica.ttc (faces 0 and 1); other systems
+# ship them as separate files, so bold has its own path + index (defaulting to
+# the same .ttc face 1, i.e. current Mac behaviour).
+HELV = os.environ.get("FONT_HELV", "/System/Library/Fonts/Helvetica.ttc")
+HELV_IDX = int(os.environ.get("FONT_HELV_INDEX", "0"))
+HELV_BOLD = os.environ.get("FONT_HELV_BOLD", HELV)
+HELV_BOLD_IDX = int(os.environ.get("FONT_HELV_BOLD_INDEX", "1"))
+SYM = os.environ.get("FONT_SYM", "/System/Library/Fonts/Apple Symbols.ttf")
 
 _ASCII = "".join(chr(c) for c in range(32, 127))
 
@@ -107,9 +115,9 @@ class Symbol:
 
 
 # Built once at import (matches genfont.py's fonts + three symbols).
-helv18 = HelvFont(HELV, 0, 18, _ASCII + DEG)
-helv28b = HelvFont(HELV, 1, 28, _ASCII + DEG)
-helv40b = HelvFont(HELV, 1, 40, "0123456789/" + DEG)
+helv18 = HelvFont(HELV, HELV_IDX, 18, _ASCII + DEG)
+helv28b = HelvFont(HELV_BOLD, HELV_BOLD_IDX, 28, _ASCII + DEG)
+helv40b = HelvFont(HELV_BOLD, HELV_BOLD_IDX, 40, "0123456789/" + DEG)
 
 # Small unit face for the "min" label (~65% of the bold arrival number).
 # Drop to helv15 for a ~50% look.
@@ -119,7 +127,7 @@ MIN_FONT = helv18
 # largest that fits the column width + the vertical band is used, so short
 # names (Woodlawn) render big and long ones (Brooklyn Bridge-City Hall) shrink.
 STATION_SIZES = [11, 15, 19, 23]
-STATION_FONTS = [HelvFont(HELV, 0, px, _ASCII + DEG) for px in STATION_SIZES]
+STATION_FONTS = [HelvFont(HELV, HELV_IDX, px, _ASCII + DEG) for px in STATION_SIZES]
 STATION_MIN_PX = 15     # hard floor: never render the destination smaller
 STATION_TOP = 72        # just below the bullet
 STATION_BOT = 101       # just above the big digits (BIG_Y)
@@ -222,7 +230,7 @@ def _draw_weather(fb, cx, w, ebikes):
 
 
 def render(arrivals, alerts, weather_info, now, rotation, clock12,
-           stop_names=None, ebikes=None, stop_coords=None):
+           stop_names=None, ebikes=None, stop_coords=None, cfg=None):
     """Return an 'L' image (0/255) exactly as the panel would show it.
 
     arrivals: dict ROUTES-index -> RouteArrivals   (as gathered from the feeds)
@@ -233,7 +241,17 @@ def render(arrivals, alerts, weather_info, now, rotation, clock12,
     clock12:  bottom-right string, e.g. "3:05 PM"
     stop_names: {stop_id: name} for turning a terminal id into a destination
     ebikes:   e-bikes available at the nearest Citi Bike station (None = hide)
+    cfg:      config module/object supplying COLUMNS/ROUTES/ARRIVALS_SHOWN.
+              Defaults to board_config so the emulator is unaffected; the render
+              service passes a per-board config to draw any board's layout.
     """
+    if cfg is None:
+        import board_config as cfg
+    # Column geometry depends on how many columns this board has (weather + N
+    # train columns), so it is computed per-render from the active config rather
+    # than the module-level default.
+    num_cols = len(cfg.COLUMNS) + 1
+    col_w = SCREEN_W // num_cols
     if stop_names is None:
         stop_names = {}
     if stop_coords is None:
@@ -242,13 +260,13 @@ def render(arrivals, alerts, weather_info, now, rotation, clock12,
     draw = ImageDraw.Draw(img)
     fb = img  # paste target
 
-    _draw_weather(fb, COL_W // 2, weather_info, ebikes)
+    _draw_weather(fb, col_w // 2, weather_info, ebikes)
 
     blurbs = []          # ticker lines for columns that ended up empty
     station_labels = []  # (cx, text) drawn together at one uniform size
 
     for col, (label, fallback, route_idxs, dest_filter) in enumerate(cfg.COLUMNS):
-        cx = (col + 1) * COL_W + COL_W // 2
+        cx = (col + 1) * col_w + col_w // 2
 
         # Bullet (the route label).
         draw.ellipse([cx - BULLET_R, BULLET_CY - BULLET_R,
@@ -333,16 +351,16 @@ def render(arrivals, alerts, weather_info, now, rotation, clock12,
 
     # Destination labels: one uniform size across all columns (the largest that
     # fits every label), so they read as a set. Truncate any that still overflow.
-    sfont = _uniform_station_font([t for _, t in station_labels], COL_W - 8)
+    sfont = _uniform_station_font([t for _, t in station_labels], col_w - 8)
     sy = STATION_TOP + ((STATION_BOT - STATION_TOP) - sfont.height) // 2
     for scx, stext in station_labels:
-        while stext and sfont.text_w(stext) > COL_W - 8:
+        while stext and sfont.text_w(stext) > col_w - 8:
             stext = stext[:-1]
         sfont.centered(fb, scx, sy, stext, BLACK)
 
     # Column separators + bottom rule.
-    for c in range(1, NUM_COLS):
-        draw.line([c * COL_W, 10, c * COL_W, RULE_Y - 8], fill=BLACK, width=1)
+    for c in range(1, num_cols):
+        draw.line([c * col_w, 10, c * col_w, RULE_Y - 8], fill=BLACK, width=1)
     draw.line([0, RULE_Y, SCREEN_W - 1, RULE_Y], fill=BLACK, width=1)
 
     # Bottom line: alert ticker on the left, clock on the right.
