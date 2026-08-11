@@ -1,3 +1,9 @@
 secrets.h
 build/
 .DS_Store
+
+# emulator runtime caches (regenerated on first run)
+emulator/stops_cache.csv
+emulator/citibike_station.json
+__pycache__/
+*.pyc

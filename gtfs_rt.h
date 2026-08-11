@@ -9,6 +9,7 @@ struct RouteArrivals {
   const char* route;      // e.g. "2"
   const char* stopId;     // e.g. "234N"
   uint32_t times[MAX_ARRIVALS];  // unix epoch seconds, sorted ascending
+  char dest[MAX_ARRIVALS][8];    // terminal stop id per arrival (e.g. "401N")
   uint8_t count;
 };
 

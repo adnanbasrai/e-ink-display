@@ -6,21 +6,32 @@ Live NYC subway arrivals on an ELECROW CrowPanel 5.79" e-paper display
 Five columns, all set in Helvetica (bitmap fonts generated from the Mac's
 real Helvetica by `genfont.py`):
 
-- **Weather** — current temp, high/low, and a symbol for today's coming
-  weather (now → 10 PM): storm (cloud + bolt) > rain (umbrella) > snow
-  (snowflake), with the precip probability beneath. Data from Open-Meteo,
-  no API key.
-- **2/3** at Nevins St (`234N`)
-- **4/5** at Nevins St (`234N`)
-- **A** at Hoyt-Schermerhorn (`A42N`)
-- **B/Q** at DeKalb Av (`R30N`)
+- **Weather + transit status** — big **feels-like** temperature, then rows
+  for **wind gusts**, **rain** likelihood + the hour it happens (only when
+  likely), **UV index** + Low/Med/High, and **Citi Bike e-bikes** at your
+  nearest station. Weather from Open-Meteo; bikes from the Citi Bike GBFS
+  feed — both need **no API key**. (The Citi Bike feed is ~960 KB, so
+  `FEED_BUF_SIZE` in `board_main.cpp` is bumped to 1.5 MB of PSRAM and the
+  station id is set in `config.h`.)
+- **4/5** at Grand Central, uptown (`631N`)
+- **4/5** at Grand Central, downtown (`631S`)
+- **6** at Grand Central, downtown (`631S`)
+- **7** at Grand Central, toward Hudson Yards (`723S`)
 
-Each train column: MTA-style bullet, station name, next train in big digits,
-then the three following trains (plain minutes, no unit). Columns with no
-upcoming service show a dash + "no service", and the ticker line at the
-bottom cycles the MTA's own alert blurb explaining why (or a fallback for
-scheduled gaps like the weekend B). Train data comes straight from the MTA's
-public GTFS-realtime feeds — **no API key needed**.
+(Stops/routes/columns are all set in `config.h` — see Configuration below.)
+
+Each train column: a **direction arrow** (N/S/E/W) left of the MTA-style bullet
+— the true compass heading, inferred from the next train's terminal coordinates
+vs the current station (the feed only encodes N/S, so this is the only way to
+know the 7 goes *west*) — then the **destination of the next train** (where it's
+headed — its terminal, pulled live from the feed and mapped to a station name
+via `stopnames.h`), the next train in big digits, and the two
+following trains, every time in minutes ("5 min"). Merged columns (e.g. `4/5`)
+tag each time with its route, and the destination follows the soonest train. Columns
+with no upcoming service show a dash + "no service" and a fallback label, and
+the ticker line at the bottom cycles the MTA's own alert blurb explaining why.
+Train data comes straight from the MTA's public GTFS-realtime feeds — **no API
+key needed**.
 
 The screen does a clean full refresh (factory OTP waveform — the panel's
 "fast" waveform ghosts badly on this unit) aligned to every minute boundary:
@@ -77,11 +88,15 @@ Everything tunable is in `config.h`:
 | `SubwayBoard.ino` | Stub (Arduino IDE requires it); logic is in `board_main.cpp` |
 | `board_main.cpp` | WiFi + NTP + fetch/parse/render loop |
 | `config.h` | Routes, columns, stops, feeds, weather URL, cadence |
-| `gtfs_rt.{h,cpp}` | Hand-rolled GTFS-realtime protobuf reader (trips + alerts) |
-| `weather.{h,cpp}` | Open-Meteo JSON parse + storm/rain/snow priority logic |
-| `display.{h,cpp}` | Board layout: bullets, station names, weather, ticker |
-| `helvfont.h` | Generated Helvetica bitmaps + weather symbols |
+| `gtfs_rt.{h,cpp}` | Hand-rolled GTFS-realtime protobuf reader (trips + alerts); also captures each trip's terminal for the destination label |
+| `weather.{h,cpp}` | Open-Meteo parse: feels-like temp, wind gusts, UV, peak rain prob + hour |
+| `iconlib.py` | Shared hand-drawn 1-bit icons (wind) for both the panel and the emulator |
+| `display.{h,cpp}` | Board layout: bullets, destinations, weather, ticker |
+| `helvfont.h` | Generated Helvetica bitmaps (incl. small `helv11`) + weather symbols |
 | `genfont.py` | Regenerates `helvfont.h` (needs Pillow, macOS fonts) |
+| `stopnames.h` | Generated stop-id → station-name table (destination labels) |
+| `genstops.py` | Regenerates `stopnames.h` from the MTA static GTFS |
+| `emulator/` | Runs the whole board on your computer in a browser (see `emulator/README.md`) |
 | `EPD*.{h,cpp}`, `spi.{h,cpp}` | Elecrow's CrowPanel 5.79" panel driver (dual SSD1683, bit-banged SPI) + `EPD_WriteOldRAM` ghosting fix |
 | `secrets.h.example` | Template for WiFi credentials |
 

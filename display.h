@@ -13,4 +13,4 @@
 // counter). `clock12` is the current time string shown bottom-right.
 void displayRender(const RouteArrivals* routes, size_t nRoutes, time_t now,
                    const RouteAlert* alerts, const WeatherInfo& wx,
-                   int rotation, const char* clock12);
+                   int rotation, const char* clock12, int ebikes);

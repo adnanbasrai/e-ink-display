@@ -14,8 +14,8 @@ const char* afterKey(const char* from, const char* key) {
   return p ? p + strlen(pat) : nullptr;
 }
 
-// Read up to `maxN` numbers from a JSON array starting at `p` (which must
-// point at or just before '['). Returns count. null entries become -1.
+// Read up to `maxN` numbers from a JSON array starting at/just before '['.
+// null entries become -1. Returns count.
 int readNumArray(const char* p, float* out, int maxN) {
   p = strchr(p, '[');
   if (!p) return 0;
@@ -38,62 +38,43 @@ int readNumArray(const char* p, float* out, int maxN) {
   return n;
 }
 
-bool isStormCode(int c) { return c == 95 || c == 96 || c == 99; }
-bool isSnowCode(int c)  { return (c >= 71 && c <= 77) || c == 85 || c == 86; }
-bool isRainCode(int c)  { return (c >= 51 && c <= 67) || (c >= 80 && c <= 82); }
+const char* uvLevel(int uv) { return uv < 3 ? "Low" : uv < 6 ? "Med" : "High"; }
 
 }  // namespace
 
 bool weatherParse(const char* json, int hourNow, WeatherInfo& out) {
   out.valid = false;
-  out.cond = WX_NONE;
-  out.prob = 0;
+  out.rainProb = 0;
+  out.rainHour = -1;
+  out.uvLevel = "Low";
 
-  // Anchor to the data objects -- the "*_units" objects repeat every key
-  // with string values, so a whole-document key search hits those first.
-  const char* cw = strstr(json, "\"current_weather\":");
+  // Anchor to the data objects. "current_units"/"hourly_units" don't match
+  // these patterns (they end in `_units":`, not `":`), so we hit the real ones.
+  const char* cur = strstr(json, "\"current\":");
   const char* hourly = strstr(json, "\"hourly\":");
-  const char* daily = strstr(json, "\"daily\":");
-  if (!cw || !daily) return false;
+  if (!cur) return false;
 
-  const char* t = afterKey(cw, "temperature");
-  if (!t) return false;
-  out.curTemp = (int)lroundf(strtof(t, nullptr));
+  const char* t = afterKey(cur, "apparent_temperature");
+  const char* g = afterKey(cur, "wind_gusts_10m");
+  const char* u = afterKey(cur, "uv_index");
+  if (!t || !g) return false;
+  out.feels = (int)lroundf(strtof(t, nullptr));
+  out.gusts = (int)lroundf(strtof(g, nullptr));
+  out.uv = u ? (int)lroundf(strtof(u, nullptr)) : 0;
+  out.uvLevel = uvLevel(out.uv);
 
-  const char* hi = afterKey(daily, "temperature_2m_max");
-  const char* lo = afterKey(daily, "temperature_2m_min");
-  if (!hi || !lo) return false;
-  float hiv[1], lov[1];
-  if (readNumArray(hi, hiv, 1) != 1 || readNumArray(lo, lov, 1) != 1) return false;
-  out.hi = (int)lroundf(hiv[0]);
-  out.lo = (int)lroundf(lov[0]);
-
-  // Hourly arrays: index == local hour (forecast_days=1, NY timezone).
-  float probs[24], codes[24];
+  // Peak precipitation probability from the current hour through 11 PM.
   const char* pp = hourly ? afterKey(hourly, "precipitation_probability") : nullptr;
-  const char* wc = hourly ? afterKey(hourly, "weathercode") : nullptr;
+  float probs[24];
   int nProb = pp ? readNumArray(pp, probs, 24) : 0;
-  int nCode = wc ? readNumArray(wc, codes, 24) : 0;
-
-  // Classify the window from now through 10 PM: any storm hour wins, then
-  // rain, then snow. Probability shown = max precip probability over the
-  // window's hours (per-class when the class has hours with data).
-  bool storm = false, rain = false, snow = false;
-  int stormP = 0, rainP = 0, snowP = 0, anyP = 0;
   int from = hourNow < 0 ? 0 : hourNow;
-  for (int h = from; h <= 22 && h < nCode; h++) {
-    int c = (int)codes[h];
-    int p = (h < nProb && probs[h] >= 0) ? (int)probs[h] : 0;
-    if (p > anyP) anyP = p;
-    if (isStormCode(c))     { storm = true; if (p > stormP) stormP = p; }
-    else if (isRainCode(c)) { rain = true;  if (p > rainP)  rainP = p; }
-    else if (isSnowCode(c)) { snow = true;  if (p > snowP)  snowP = p; }
+  int bestP = 0, bestH = -1;
+  for (int h = from; h < 24 && h < nProb; h++) {
+    if (probs[h] < 0) continue;
+    int p = (int)probs[h];
+    if (p > bestP) { bestP = p; bestH = h; }
   }
-
-  if (storm)      { out.cond = WX_STORM; out.prob = stormP ? stormP : anyP; }
-  else if (rain)  { out.cond = WX_RAIN;  out.prob = rainP ? rainP : anyP; }
-  else if (snow)  { out.cond = WX_SNOW;  out.prob = snowP ? snowP : anyP; }
-  else if (anyP >= 25) { out.cond = WX_RAIN; out.prob = anyP; }  // precip likely, code bland
+  if (bestP >= 25) { out.rainProb = bestP; out.rainHour = bestH; }
 
   out.valid = true;
   return true;

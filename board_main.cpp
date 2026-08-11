@@ -29,7 +29,7 @@
 #define EPD_POWER_PIN 7      // panel power enable -- must be HIGH or screen stays blank
 #define POWER_LED_PIN 41
 
-#define FEED_BUF_SIZE (512 * 1024)   // alerts feed alone is ~430 KB
+#define FEED_BUF_SIZE (1536 * 1024)  // Citi Bike station_status is ~960 KB (PSRAM)
 #define NYC_TZ "EST5EDT,M3.2.0/2,M11.1.0/2"
 
 static const char* FEED_URLS[NUM_FEEDS] = { FEED_IRT, FEED_BDFM, FEED_NQRW, FEED_ACE };
@@ -45,6 +45,8 @@ static uint32_t lastFetchOkMs[NUM_FEEDS] = {0};
 static int refreshCount = 0;
 static WeatherInfo weather = {};
 static uint32_t lastWeatherMs = 0;
+static int ebikes = -1;              // Citi Bike e-bikes at station (-1 = unknown)
+static uint32_t lastCitibikeMs = 0;
 
 // ---------- e-paper push helpers ----------
 
@@ -154,12 +156,37 @@ static void updateWeather() {
   WeatherInfo fresh;
   if (weatherParse((const char*)feedBuf, tm_now.tm_hour, fresh)) {
     weather = fresh;
-    Serial.printf("weather: %dF (%d/%d) cond=%d %d%%\n", weather.curTemp,
-                  weather.hi, weather.lo, weather.cond, weather.prob);
+    Serial.printf("weather: feels %dF, gust %dmph, UV %d(%s), rain %d%%@%dh\n",
+                  weather.feels, weather.gusts, weather.uv, weather.uvLevel,
+                  weather.rainProb, weather.rainHour);
   } else {
     Serial.println("weather parse failed");
   }
   lastWeatherMs = millis();
+}
+
+// Scan the GBFS station_status JSON for our station's e-bike count. Each object
+// lists station_id first, so the first num_ebikes_available after our id is
+// ours. Returns -1 if the station isn't found.
+static int parseCitibikeEbikes(const char* json, const char* stationId) {
+  const char* p = strstr(json, stationId);
+  if (!p) return -1;
+  const char* k = strstr(p, "\"num_ebikes_available\":");
+  if (!k) return -1;
+  return atoi(k + strlen("\"num_ebikes_available\":"));
+}
+
+static void updateCitibike() {
+  size_t len = fetchFeed(CITIBIKE_STATUS_URL);
+  if (!len || len >= FEED_BUF_SIZE) {
+    Serial.printf("citibike fetch failed (len=%u)\n", (unsigned)len);
+    return;
+  }
+  feedBuf[len] = '\0';
+  int e = parseCitibikeEbikes((const char*)feedBuf, CITIBIKE_STATION_ID);
+  if (e >= 0) { ebikes = e; Serial.printf("citibike: %d e-bikes\n", ebikes); }
+  else Serial.println("citibike: station not found");
+  lastCitibikeMs = millis();
 }
 
 static void updateArrivals(bool withAlerts) {
@@ -229,7 +256,7 @@ static void renderBoard() {
   else
     snprintf(bottomRight, sizeof(bottomRight), "%s", clockTrim);
 
-  displayRender(arrivals, NUM_ROUTES, now, routeAlerts, weather, refreshCount, bottomRight);
+  displayRender(arrivals, NUM_ROUTES, now, routeAlerts, weather, refreshCount, bottomRight, ebikes);
 
   uint32_t t0 = millis();
   pushClean();                 // white-flush + redraw, every minute
@@ -283,6 +310,7 @@ void setup() {
   }
 
   updateWeather();
+  updateCitibike();
   updateArrivals(true);
   refreshCount = 0;            // first paint is a full refresh
   renderBoard();
@@ -297,7 +325,8 @@ void loop() {
   time_t target = (now / 60 + 1) * 60;
   bool withAlerts = ((target / 60) % ALERTS_EVERY_MIN) == 0;
   bool withWeather = millis() - lastWeatherMs >= WEATHER_INTERVAL_MS;
-  int prefetch = 20 + (withAlerts ? 20 : 0) + (withWeather ? 5 : 0);
+  bool withCitibike = millis() - lastCitibikeMs >= (uint32_t)CITIBIKE_EVERY_MIN * 60000UL;
+  int prefetch = 20 + (withAlerts ? 20 : 0) + (withWeather ? 5 : 0) + (withCitibike ? 15 : 0);
 
   while (time(nullptr) < target - prefetch) delay(200);
 
@@ -306,6 +335,7 @@ void loop() {
     Serial.println("WiFi reconnect failed; showing stale data");
   } else {
     if (withWeather) updateWeather();
+    if (withCitibike) updateCitibike();
     updateArrivals(withAlerts);
   }
   Serial.printf("fetch took %lu ms (alerts=%d)\n", millis() - t0, withAlerts);

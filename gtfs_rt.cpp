@@ -70,7 +70,7 @@ bool readString(Cursor& c, char* out, size_t outSize) {
   return true;
 }
 
-void insertSorted(RouteArrivals& r, uint32_t t) {
+void insertSorted(RouteArrivals& r, uint32_t t, const char* dest) {
   // Ignore duplicates (a trip occasionally appears twice in a feed).
   for (uint8_t i = 0; i < r.count; i++)
     if (r.times[i] == t) return;
@@ -79,9 +79,14 @@ void insertSorted(RouteArrivals& r, uint32_t t) {
   int i = r.count - 1;
   while (i > 0 && r.times[i - 1] > t) {
     r.times[i] = r.times[i - 1];
+    memcpy(r.dest[i], r.dest[i - 1], sizeof(r.dest[0]));
     i--;
   }
   r.times[i] = t;
+  size_t n = 0;
+  if (dest) { n = strlen(dest); if (n >= sizeof(r.dest[0])) n = sizeof(r.dest[0]) - 1; }
+  memcpy(r.dest[i], dest ? dest : "", n);
+  r.dest[i][n] = '\0';
 }
 
 // StopTimeEvent -> epoch seconds (0 if absent)
@@ -161,12 +166,15 @@ bool parseTripUpdate(Cursor c, RouteArrivals* routes, size_t nRoutes) {
   }
 
   if (!routeId[0]) return true;
+  // Stop-time updates run in stop order, so the last one is the terminal --
+  // where this train is going.
+  const char* terminal = nPending ? pending[nPending - 1].stopId : "";
   for (size_t r = 0; r < nRoutes; r++) {
     if (strcmp(routes[r].route, routeId) != 0) continue;
     for (size_t i = 0; i < nPending; i++) {
       if (strcmp(pending[i].stopId, routes[r].stopId) != 0) continue;
       uint32_t t = pending[i].arrival ? pending[i].arrival : pending[i].departure;
-      if (t) insertSorted(routes[r], t);
+      if (t) insertSorted(routes[r], t, terminal);
     }
   }
   return true;
