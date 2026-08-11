@@ -1,9 +1,9 @@
 // NYC Subway arrivals board for the ELECROW CrowPanel 5.79" e-paper display
 // (ESP32-S3, 792x272, dual SSD1683).
 //
-// Shows Manhattan-bound arrivals for the 2/3/4/5 at Nevins St and the B/Q at
-// DeKalb Av, refreshed every minute from the MTA's GTFS-realtime feeds
-// (no API key required).
+// Shows arrivals for the 4/5/6/7 at Grand Central-42 St plus a weather + Citi
+// Bike column, refreshed every minute from the MTA's GTFS-realtime feeds
+// (no API key required). Stops/routes/columns are configured in config.h.
 //
 // Board settings (Arduino IDE): "ESP32S3 Dev Module", PSRAM: "OPI PSRAM",
 // Partition Scheme: "Huge APP". See README.md.
@@ -204,9 +204,17 @@ static void updateArrivals(bool withAlerts) {
     if (!nFresh) continue;
 
     size_t len = fetchFeed(FEED_URLS[f]);
-    if (!len || !gtfsRtParse(feedBuf, len, fresh, nFresh)) {
+    size_t nEntities = 0;
+    if (!len || !gtfsRtParse(feedBuf, len, fresh, nFresh, &nEntities)) {
       Serial.printf("feed %d failed (len=%u)\n", f, (unsigned)len);
       continue;                // keep previous data for these routes
+    }
+    if (nEntities == 0) {
+      // Empty/near-empty 200 (CDN or proxy hiccup): don't let it wipe the
+      // last-good times to "no service". Keep stale data; the age counter and
+      // the bottom-right "data N min old" line will surface the staleness.
+      Serial.printf("feed %d empty body; keeping last-good\n", f);
+      continue;
     }
     lastFetchOkMs[f] = millis();
 
@@ -240,9 +248,18 @@ static void renderBoard() {
   struct tm tm_now;
   localtime_r(&now, &tm_now);
 
-  uint32_t oldestOk = lastFetchOkMs[0];
-  for (int f = 1; f < NUM_FEEDS; f++)
-    if (lastFetchOkMs[f] < oldestOk) oldestOk = lastFetchOkMs[f];
+  // Age is measured only across feeds that have actually fetched OK. A feed
+  // with no matching route is never fetched (its slot stays 0), so including
+  // all NUM_FEEDS slots here made oldestOk permanently 0 -> the board was stuck
+  // on "waiting for data" even while IRT updated fine, and the "data N min old"
+  // staleness warning could never appear. Mirror the emulator: min() over the
+  // feeds with a non-zero timestamp; if none have succeeded yet, "waiting".
+  uint32_t oldestOk = 0;
+  for (int f = 0; f < NUM_FEEDS; f++) {
+    uint32_t ok = lastFetchOkMs[f];
+    if (!ok) continue;                       // never fetched (or unused) -> skip
+    if (!oldestOk || ok < oldestOk) oldestOk = ok;
+  }
 
   char clockBuf[16], bottomRight[40];
   strftime(clockBuf, sizeof(clockBuf), "%l:%M %p", &tm_now);
@@ -283,15 +300,23 @@ void setup() {
   feedBuf = (uint8_t*)ps_malloc(FEED_BUF_SIZE);
   if (!feedBuf) feedBuf = (uint8_t*)malloc(FEED_BUF_SIZE);
   if (!feedBuf) {
+    // Almost always a mis-set build (OPI PSRAM off). Show it, then reboot and
+    // retry rather than sitting bricked -- a power-cycle can't be assumed when
+    // the unit lives at a friend's house.
     splash("ERROR", "Feed buffer alloc failed - enable OPI PSRAM");
-    while (true) delay(1000);
+    delay(60000);
+    ESP.restart();
   }
 
   splash("NYC Subway", "Connecting to WiFi...");
 
   if (!ensureWiFi()) {
-    splash("No WiFi", "Check secrets.h, then press RST");
-    while (true) delay(1000);
+    // The router may just be rebooting when the display powers on. Don't wedge
+    // forever waiting for a human to press RST -- reboot and try again. The
+    // loop() path already tolerates later WiFi drops via ensureWiFi().
+    splash("No WiFi", "Retrying shortly...");
+    delay(15000);
+    ESP.restart();
   }
   Serial.printf("WiFi up: %s\n", WiFi.localIP().toString().c_str());
 

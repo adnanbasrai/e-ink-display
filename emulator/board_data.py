@@ -115,8 +115,15 @@ class BoardState:
             except Exception as e:
                 self.log("feed %d fetch failed: %s" % (f, e))
                 continue
-            if not gtfs_rt_parse(raw, list(fresh.values())):
+            n_entities = gtfs_rt_parse(raw, list(fresh.values()))
+            if n_entities < 0:
                 self.log("feed %d parse failed" % f)
+                continue
+            if n_entities == 0:
+                # Empty/near-empty 200 (CDN or proxy hiccup): don't let it wipe
+                # the last-good times. Keep stale data and let the age counter
+                # climb instead of flashing every column to "no service".
+                self.log("feed %d empty body; keeping last-good" % f)
                 continue
             self.last_feed_ok[f] = time.monotonic()
             for i, ra in fresh.items():

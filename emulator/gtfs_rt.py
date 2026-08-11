@@ -220,32 +220,43 @@ def _parse_trip_update(c, routes_by_key):
 
 
 def gtfs_rt_parse(buf, routes):
-    """Parse a FeedMessage; append arrivals into the given RouteArrivals list."""
+    """Parse a FeedMessage; append arrivals into the given RouteArrivals list.
+
+    Returns the number of FeedEntity records seen, or -1 on malformed protobuf.
+    A return of 0 means the body carried no entities at all -- e.g. an empty or
+    truncated-to-nothing 200 from a CDN/proxy. A live MTA feed always carries
+    many entities, so callers should treat 0 as "no real data" and KEEP their
+    last-good arrivals rather than wiping every column to "no service". (A route
+    that genuinely has no service still shows up as a non-empty feed whose
+    entities simply don't match that route, so this doesn't mask real outages.)
+    """
     routes_by_key = {(r.route, r.stop_id): r for r in routes}
     c = _Cursor(buf, 0, len(buf))
+    n_entities = 0
     while c.p < c.end:
         tag, ok = _read_varint(c)
         if not ok:
-            return False
+            return -1
         field, wire = tag >> 3, tag & 7
         if field == 2 and wire == 2:  # FeedEntity
             entity, ok = _enter(c)
             if not ok:
-                return False
+                return -1
+            n_entities += 1
             while entity.p < entity.end:
                 t2, ok = _read_varint(entity)
                 if not ok:
-                    return False
+                    return -1
                 if (t2 >> 3) == 3 and (t2 & 7) == 2:  # trip_update
                     tu, ok = _enter(entity)
                     if not ok:
-                        return False
+                        return -1
                     _parse_trip_update(tu, routes_by_key)
                 elif not _skip_field(entity, t2 & 7):
-                    return False
+                    return -1
         elif not _skip_field(c, wire):
-            return False
-    return True
+            return -1
+    return n_entities
 
 
 # ---- Service alerts ----

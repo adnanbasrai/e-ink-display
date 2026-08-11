@@ -5,7 +5,20 @@ index (+ Low/Med/High), and the peak upcoming rain probability and the hour it
 happens. Key-free, same API. Mirrored by the firmware's weather.cpp.
 """
 
+import math
+
 RAIN_THRESHOLD = 25   # only surface a rain row at or above this probability (%)
+
+
+def _lround(x):
+    """Round half away from zero, matching the firmware's (int)lroundf().
+
+    Python's built-in round() is banker's rounding (half to even), which
+    disagrees with the device at .5 boundaries (e.g. 72.5F -> 72 here but 73
+    on the panel, and a UV of 2.5 would flip the Low/Med label). Keeping this
+    identical preserves the "renders identically" contract with weather.cpp.
+    """
+    return int(math.floor(x + 0.5)) if x >= 0 else int(math.ceil(x - 0.5))
 
 
 class WeatherInfo:
@@ -32,9 +45,9 @@ def weather_parse(data, hour_now):
     out = WeatherInfo()
     cur = data.get("current") or {}
     try:
-        out.feels = round(float(cur["apparent_temperature"]))
-        out.gusts = round(float(cur["wind_gusts_10m"]))
-        out.uv = round(float(cur.get("uv_index", 0)))
+        out.feels = _lround(float(cur["apparent_temperature"]))
+        out.gusts = _lround(float(cur["wind_gusts_10m"]))
+        out.uv = _lround(float(cur.get("uv_index", 0)))
     except (KeyError, TypeError, ValueError):
         return out
     out.uv_level = _uv_level(out.uv)

@@ -304,7 +304,9 @@ bool gtfsAlertsParse(const uint8_t* buf, size_t len, uint32_t now, RouteAlert* a
   return true;
 }
 
-bool gtfsRtParse(const uint8_t* buf, size_t len, RouteArrivals* routes, size_t nRoutes) {
+bool gtfsRtParse(const uint8_t* buf, size_t len, RouteArrivals* routes,
+                 size_t nRoutes, size_t* entityCount) {
+  if (entityCount) *entityCount = 0;
   Cursor c{buf, buf + len};
   uint64_t tag;
   while (c.p < c.end) {
@@ -313,6 +315,7 @@ bool gtfsRtParse(const uint8_t* buf, size_t len, RouteArrivals* routes, size_t n
     if (field == 2 && wire == 2) {                 // FeedEntity
       Cursor entity;
       if (!enterMessage(c, entity)) return false;
+      if (entityCount) (*entityCount)++;
       uint64_t t2;
       while (entity.p < entity.end) {
         if (!readVarint(entity, t2)) return false;
