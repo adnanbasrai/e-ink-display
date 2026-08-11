@@ -1,0 +1,16 @@
+{
+  "name": "backend",
+  "version": "1.0.0",
+  "description": "Stores each board's settings and serves the device a ready-to-use config JSON. The board fetches `GET /api/config?device=<MAC>`; owners edit via a web page after signing in with the **display ID + PIN** shown on the board's screen.",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "devDependencies": {
+    "wrangler": "^4.121.0"
+  }
+}
