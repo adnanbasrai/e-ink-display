@@ -15,6 +15,7 @@
 #include <time.h>
 
 #include "config.h"
+#include "config_fetch.h"
 #include "gtfs_rt.h"
 #include "display.h"
 #include "weather.h"
@@ -39,14 +40,16 @@ static uint8_t* feedBuf = nullptr;
 
 // Last successful arrivals per route; kept when a fetch fails so the board
 // degrades to slightly-stale times instead of blanking out.
-static RouteArrivals arrivals[NUM_ROUTES];
-static RouteAlert routeAlerts[NUM_ROUTES];
+static RouteArrivals arrivals[MAX_ROUTES];
+static RouteAlert routeAlerts[MAX_ROUTES];
 static uint32_t lastFetchOkMs[NUM_FEEDS] = {0};
 static int refreshCount = 0;
 static WeatherInfo weather = {};
 static uint32_t lastWeatherMs = 0;
 static int ebikes = -1;              // Citi Bike e-bikes at station (-1 = unknown)
 static uint32_t lastCitibikeMs = 0;
+static uint32_t lastConfigMs = 0;    // last remote-config fetch
+static uint32_t appliedRev = 0;      // CONFIG_REV the arrivals arrays were built for
 
 // ---------- e-paper push helpers ----------
 
@@ -177,6 +180,7 @@ static int parseCitibikeEbikes(const char* json, const char* stationId) {
 }
 
 static void updateCitibike() {
+  if (!CITIBIKE_STATION_ID[0]) { ebikes = -1; return; }  // no station -> hide the row
   size_t len = fetchFeed(CITIBIKE_STATUS_URL);
   if (!len || len >= FEED_BUF_SIZE) {
     Serial.printf("citibike fetch failed (len=%u)\n", (unsigned)len);
@@ -192,7 +196,7 @@ static void updateCitibike() {
 static void updateArrivals(bool withAlerts) {
   for (int f = 0; f < NUM_FEEDS; f++) {
     // Fresh scratch entries for the routes served by this feed.
-    RouteArrivals fresh[NUM_ROUTES];
+    RouteArrivals fresh[MAX_ROUTES];
     size_t nFresh = 0;
     for (int r = 0; r < NUM_ROUTES; r++) {
       if (ROUTES[r].feedIndex != f) continue;
@@ -228,7 +232,7 @@ static void updateArrivals(bool withAlerts) {
   // so it's only fetched every few minutes; kept from the last good fetch
   // on failure, same as arrivals.
   if (!withAlerts) return;
-  RouteAlert fresh[NUM_ROUTES];
+  RouteAlert fresh[MAX_ROUTES];
   for (int r = 0; r < NUM_ROUTES; r++) {
     fresh[r].route = ROUTES[r].route;
     fresh[r].text[0] = '\0';
@@ -239,6 +243,41 @@ static void updateArrivals(bool withAlerts) {
   } else {
     Serial.printf("alerts feed failed (len=%u)\n", (unsigned)len);
   }
+}
+
+// ---------- remote config ----------
+
+// Point the per-route arrival/alert buffers at the current ROUTES[]. Called
+// after the config is (re)loaded, since a config change can alter the route set.
+static void initArrivals() {
+  for (int r = 0; r < NUM_ROUTES; r++) {
+    arrivals[r].route = ROUTES[r].route;
+    arrivals[r].stopId = ROUTES[r].stopId;
+    arrivals[r].count = 0;
+    routeAlerts[r].route = ROUTES[r].route;
+    routeAlerts[r].text[0] = '\0';
+  }
+}
+
+// Pull this board's settings from the backend (keyed by its MAC) and parse them
+// into the config globals. Caches the raw JSON in NVS on success. Returns false
+// on any failure so the caller can keep the previous settings.
+static bool fetchConfig() {
+  String url = String(WORKER_BASE) + "/api/config?device=" + deviceId();
+  size_t len = fetchFeed(url.c_str());
+  if (!len || len >= FEED_BUF_SIZE) {
+    Serial.printf("config fetch failed (len=%u)\n", (unsigned)len);
+    return false;
+  }
+  feedBuf[len] = '\0';
+  if (!configParse((const char*)feedBuf)) {
+    Serial.println("config parse failed");
+    return false;
+  }
+  configSaveRaw((const char*)feedBuf);
+  Serial.printf("config rev %u: %u routes / %u cols, id=%s pin=%s\n",
+                (unsigned)CONFIG_REV, NUM_ROUTES, NUM_TRAIN_COLS, DISPLAY_ID, DEVICE_PIN);
+  return true;
 }
 
 // ---------- rendering ----------
@@ -326,13 +365,23 @@ void setup() {
   while (time(nullptr) < 1600000000 && millis() - start < 30000) delay(200);
   Serial.printf("ntp: %ld\n", (long)time(nullptr));
 
-  for (int r = 0; r < NUM_ROUTES; r++) {
-    arrivals[r].route = ROUTES[r].route;
-    arrivals[r].stopId = ROUTES[r].stopId;
-    arrivals[r].count = 0;
-    routeAlerts[r].route = ROUTES[r].route;
-    routeAlerts[r].text[0] = '\0';
+  // Load settings: try the backend, fall back to the NVS cache, then the baked
+  // default, so the board always has something to show.
+  splash("NYC Subway", "Loading settings...");
+  if (!fetchConfig()) {
+    if (configLoadNVS()) Serial.println("config: using cached settings");
+    else { configLoadDefault(); Serial.println("config: using built-in default"); }
   }
+  // Until the board is claimed on the website, show its sign-in ID + PIN so the
+  // owner can read them off the screen.
+  if (DEVICE_PIN[0]) {
+    char l2[40];
+    snprintf(l2, sizeof(l2), "ID %s  PIN %s", DISPLAY_ID, DEVICE_PIN);
+    splash("Set up online:", l2);
+    delay(5000);
+  }
+  initArrivals();
+  appliedRev = CONFIG_REV;
 
   updateWeather();
   updateCitibike();
@@ -351,7 +400,9 @@ void loop() {
   bool withAlerts = ((target / 60) % ALERTS_EVERY_MIN) == 0;
   bool withWeather = millis() - lastWeatherMs >= WEATHER_INTERVAL_MS;
   bool withCitibike = millis() - lastCitibikeMs >= (uint32_t)CITIBIKE_EVERY_MIN * 60000UL;
-  int prefetch = 20 + (withAlerts ? 20 : 0) + (withWeather ? 5 : 0) + (withCitibike ? 15 : 0);
+  bool withConfig = millis() - lastConfigMs >= CONFIG_REFETCH_MS;
+  int prefetch = 20 + (withAlerts ? 20 : 0) + (withWeather ? 5 : 0)
+                    + (withCitibike ? 15 : 0) + (withConfig ? 5 : 0);
 
   while (time(nullptr) < target - prefetch) delay(200);
 
@@ -359,6 +410,12 @@ void loop() {
   if (!ensureWiFi()) {
     Serial.println("WiFi reconnect failed; showing stale data");
   } else {
+    // Re-pull settings first; if they changed on the website, rebuild the
+    // per-route buffers before fetching arrivals into them.
+    if (withConfig) {
+      if (fetchConfig() && CONFIG_REV != appliedRev) { initArrivals(); appliedRev = CONFIG_REV; }
+      lastConfigMs = millis();
+    }
     if (withWeather) updateWeather();
     if (withCitibike) updateCitibike();
     updateArrivals(withAlerts);
