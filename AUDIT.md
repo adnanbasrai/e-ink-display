@@ -50,11 +50,12 @@ must be changed on **both** sides together or not at all:
 
 ### High
 1. **Always "waiting for data"** — _fixed._ (see above)
-2. **No self-recovery / provisioning is compile-time.** Boot traps froze forever
-   (_fixed_); WiFi credentials still live in `secrets.h` at compile time, so
-   handing a unit to a friend needs a re-flash per household. There is no
-   watchdog to reboot a wedged state. → captive-portal provisioning + a task
-   watchdog (see roadmap Phase 3).
+2. **No self-recovery.** Boot traps froze forever (_fixed_). ~~WiFi credentials
+   live in `secrets.h` at compile time~~ — _fixed_: `wifi_provision.{h,cpp}`
+   adds a self-serve captive-portal setup (a fresh board broadcasts its own
+   hotspot with a setup page; hold BOOT to re-provision), so handing a unit to
+   a friend no longer needs a per-household re-flash. There is still no
+   watchdog to reboot a wedged state during normal operation.
 
 ### Medium
 3. **Wrong destination/arrow for trips with >24 remaining stops.**
@@ -172,7 +173,7 @@ backend is unreachable (the backend becomes a hard dependency — the main risk)
   e-ink screen at first boot; the owner enters it in the portal to bind
   device ↔ account. Pin the backend cert (replace `setInsecure()`).
 - WiFi via **captive-portal** provisioning (WiFiManager-style) — no re-flash per
-  friend.
+  friend. _Done: `wifi_provision.{h,cpp}` (self-serve hotspot + setup page)._
 
 **Stack:** FastAPI wrapping the existing Pillow renderer + Postgres (SQLite to
 start), one small VM. The portal is a **picker over a station catalog** (built

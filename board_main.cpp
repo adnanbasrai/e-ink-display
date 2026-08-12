@@ -16,19 +16,23 @@
 
 #include "config.h"
 #include "config_fetch.h"
+#include "wifi_provision.h"
 #include "gtfs_rt.h"
 #include "display.h"
 #include "weather.h"
 #include "EPD.h"
 
+// secrets.h is now OPTIONAL: it's only a dev fallback (WIFI_SSID/WIFI_PASSWORD)
+// consulted if nothing has been saved via the setup portal yet. A board with no
+// secrets.h and nothing provisioned just boots straight into the WiFi setup
+// portal -- see wifi_provision.h.
 #if __has_include("secrets.h")
 #include "secrets.h"
-#else
-#error "Copy secrets.h.example to secrets.h and fill in your WiFi credentials."
 #endif
 
 #define EPD_POWER_PIN 7      // panel power enable -- must be HIGH or screen stays blank
 #define POWER_LED_PIN 41
+#define BOOT_BTN_PIN 0        // BOOT button (GPIO0) on ESP32-S3 dev boards
 
 #define FEED_BUF_SIZE (1536 * 1024)  // Citi Bike station_status is ~960 KB (PSRAM)
 #define NYC_TZ "EST5EDT,M3.2.0/2,M11.1.0/2"
@@ -95,14 +99,13 @@ static void splash(const char* line1, const char* line2) {
 
 // ---------- network ----------
 
+// Reconnect using the saved network (NVS, set up via the WiFi portal). Does
+// NOT fall into the setup portal itself -- a mid-operation dropout should
+// just retry, not knock the board offline into "please reconfigure me" mode
+// while nobody's there to see the hotspot. See wifi_provision.h.
 static bool ensureWiFi() {
   if (WiFi.status() == WL_CONNECTED) return true;
-  WiFi.disconnect();
-  WiFi.mode(WIFI_STA);
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  uint32_t start = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - start < 20000) delay(250);
-  return WiFi.status() == WL_CONNECTED;
+  return wifiTryStored(15000);
 }
 
 // Fetch one GTFS-rt feed into feedBuf. Returns payload length, 0 on failure.
@@ -347,15 +350,34 @@ void setup() {
     ESP.restart();
   }
 
+  // Hold BOOT (GPIO0) at power-on to forget the saved network and re-run the
+  // setup portal -- e.g. a friend's WiFi password changed. (On an enclosed
+  // board where GPIO0 isn't reachable, re-flashing has the same effect.)
+  pinMode(BOOT_BTN_PIN, INPUT_PULLUP);
+  delay(20);
+  if (digitalRead(BOOT_BTN_PIN) == LOW) {
+    Serial.println("BOOT held at power-on -> forgetting saved WiFi");
+    wifiForget();
+  }
+
   splash("NYC Subway", "Connecting to WiFi...");
 
   if (!ensureWiFi()) {
-    // The router may just be rebooting when the display powers on. Don't wedge
-    // forever waiting for a human to press RST -- reboot and try again. The
-    // loop() path already tolerates later WiFi drops via ensureWiFi().
-    splash("No WiFi", "Retrying shortly...");
-    delay(15000);
-    ESP.restart();
+    if (wifiHasStoredCreds()) {
+      // Known network, just unreachable right now (e.g. the router is
+      // rebooting too). Don't force a stranger into re-provisioning -- retry
+      // like before. loop() also tolerates later drops via ensureWiFi().
+      splash("No WiFi", "Retrying shortly...");
+      delay(15000);
+      ESP.restart();
+    }
+    // Nothing configured at all -- a fresh/unboxed board, or BOOT was just
+    // held. Broadcast our own hotspot with a setup page until someone (a
+    // friend, on their phone) picks a network. wifiRunPortal() restarts the
+    // board itself once that succeeds, so this call does not return.
+    wifiRunPortal(splash);
+    delay(2000);
+    ESP.restart();   // defensive; shouldn't be reached
   }
   Serial.printf("WiFi up: %s\n", WiFi.localIP().toString().c_str());
 

@@ -43,8 +43,10 @@ gitignored and regenerate on first run.
   Needs Pillow. **Reads macOS font paths** (`/System/Library/Fonts/Helvetica.ttc`,
   `Apple Symbols.ttf`) in `render.py`/`iconlib.py`, so it renders as-is on a Mac;
   on Windows/Linux repoint those paths.
-- **Device:** copy `secrets.h.example` → `secrets.h` (WiFi, 2.4 GHz), Arduino IDE
-  "ESP32S3 Dev Module" + OPI PSRAM + Huge APP, flash. See `README.md`.
+- **Device:** flash as-is (no `secrets.h` needed) and it boots into a self-serve
+  WiFi setup hotspot — see "WiFi setup" in `README.md`. `secrets.h.example` →
+  `secrets.h` is only a dev shortcut so your own board auto-connects on every
+  reflash. Arduino IDE "ESP32S3 Dev Module" + OPI PSRAM + Huge APP.
 
 ## Data sources (all key-free)
 

@@ -41,8 +41,12 @@ alerts feed (~430 KB) is only fetched every 5 minutes.
 
 ## Setup
 
-1. Copy `secrets.h.example` to `secrets.h` and fill in your WiFi SSID and
-   password (2.4 GHz networks only — the ESP32 has no 5 GHz radio).
+1. **WiFi credentials are optional at flash time.** A freshly-flashed board
+   with no `secrets.h` (or a blank one) boots straight into its own WiFi
+   setup hotspot — see [WiFi setup](#wifi-setup) below. For your own dev
+   board, copy `secrets.h.example` to `secrets.h` and fill in your SSID/
+   password instead, as a shortcut so it auto-connects on every reflash
+   (2.4 GHz only — the ESP32 has no 5 GHz radio).
 
 2. Arduino IDE → Boards Manager → install **esp32 by Espressif Systems**.
 
@@ -65,6 +69,36 @@ alerts feed (~430 KB) is only fetched every 5 minutes.
 The board boots, connects to WiFi, syncs time via NTP, then fetches and
 draws arrivals every 60 seconds (partial refresh; every 10th update is a
 full flashing refresh to clear ghosting).
+
+## WiFi setup
+
+The intended flow for giving a board to someone else: flash it once with no
+WiFi credentials baked in, hand it over, they connect it to their own network
+themselves. No laptop, no re-flash, nobody sees anybody else's password.
+
+1. Power on a board with no saved network (a fresh flash, or after a re-setup
+   — see below). The screen shows **"Set up your board: WiFi:
+   SubwayBoard-XXXX"** and the board starts broadcasting that name as an open
+   WiFi hotspot.
+2. On a phone, join **"SubwayBoard-XXXX"**. A setup page should pop up
+   automatically (standard captive-portal behavior); if not, open a browser
+   and go to any `http://` address.
+3. Pick your home network from the list (or type its name for a hidden
+   network), enter the password, and tap **Connect**.
+4. The board tests the network before saving anything — if the password's
+   wrong, nothing is saved and you can try again. On success it saves the
+   network and restarts onto it.
+
+**To re-run setup later** (e.g. the WiFi password changed): hold the **BOOT**
+button while powering the board on. That forgets the saved network and starts
+the hotspot again. (On an enclosed board where BOOT isn't reachable, a
+re-flash has the same effect — nothing else about the board's settings is
+lost, since those live on the backend, not on the device.)
+
+A board with a known network that's just temporarily unreachable (router
+rebooting, etc.) does **not** drop into setup mode on its own — it retries the
+saved network, so a brief outage doesn't strand the board in hotspot mode with
+nobody around to reconnect it.
 
 ## Configuration
 
