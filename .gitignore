@@ -7,3 +7,16 @@ emulator/stops_cache.csv
 emulator/citibike_station.json
 __pycache__/
 *.pyc
+
+# bundled Mac fonts for the render service (Apple licensing; local build only)
+render-service/fonts/*.ttc
+render-service/fonts/*.ttf
+
+# backend
+backend/node_modules/
+backend/.wrangler/
+backend/.dev.vars
+backend/package-lock.json
+
+# generated catalog seed data (regenerate with seed/gen_catalog.py)
+backend/seed/*.sql

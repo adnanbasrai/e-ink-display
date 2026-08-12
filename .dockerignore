@@ -1,0 +1,7 @@
+.git
+backend/node_modules
+backend/.wrangler
+backend/.dev.vars
+**/__pycache__
+**/*.pyc
+build

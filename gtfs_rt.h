@@ -17,7 +17,14 @@ struct RouteArrivals {
 // For every TripUpdate whose route_id matches an entry in `routes`, arrival
 // times at that entry's stopId are appended (kept sorted, capped at
 // MAX_ARRIVALS). Returns false only on malformed protobuf.
-bool gtfsRtParse(const uint8_t* buf, size_t len, RouteArrivals* routes, size_t nRoutes);
+//
+// If `entityCount` is non-null it receives the number of FeedEntity records
+// seen. A live MTA feed always carries many; 0 means an empty/near-empty 200
+// (CDN/proxy hiccup), and the caller should keep its last-good data rather than
+// treat it as "no service". (A route with genuinely no service still arrives as
+// a non-empty feed whose entities simply don't match, so this hides nothing.)
+bool gtfsRtParse(const uint8_t* buf, size_t len, RouteArrivals* routes,
+                 size_t nRoutes, size_t* entityCount = nullptr);
 
 // One service-alert blurb per route (MTA's short header, first line, English).
 struct RouteAlert {

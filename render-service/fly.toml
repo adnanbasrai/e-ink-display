@@ -1,0 +1,24 @@
+# Fly.io config for the preview render service. Deploy from the REPO ROOT so the
+# build context includes emulator/ and iconlib.py:
+#   cd .. && fly deploy --config render-service/fly.toml
+#
+# Scale-to-zero: the machine sleeps when idle and wakes on the next preview
+# request (a cold start of a second or two), so it costs ~nothing between edits.
+
+app = "subwayboard-render"
+primary_region = "ewr"
+
+# Dockerfile + build context are passed on the CLI (context = repo root, so the
+# image can include emulator/ and iconlib.py):
+#   flyctl deploy . --config render-service/fly.toml --dockerfile render-service/Dockerfile
+
+[http_service]
+  internal_port = 8090
+  force_https = true
+  auto_stop_machines = true
+  auto_start_machines = true
+  min_machines_running = 0
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

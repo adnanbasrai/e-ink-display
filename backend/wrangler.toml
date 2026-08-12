@@ -1,0 +1,20 @@
+# Cloudflare Worker + D1 for SubwayBoard remote config.
+# Deploy steps live in backend/README.md. After `wrangler d1 create subwayboard`,
+# paste the returned database_id below.
+
+name = "subwayboard"
+main = "src/index.js"
+compatibility_date = "2024-11-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "subwayboard"
+database_id = "43eac3b3-62e2-4d0e-b89c-5baedf6cd6f0"
+
+[vars]
+# URL of the Python render/preview service (deployed on Fly.io).
+RENDER_SERVICE_URL = "https://subwayboard-render.fly.dev"
+
+# Secrets (set with `wrangler secret put <NAME>`, never commit real values):
+#   ADMIN_TOKEN   - bearer token guarding /api/admin/*
+#   SESSION_SECRET - HMAC key for signing edit-session tokens

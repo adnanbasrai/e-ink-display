@@ -23,8 +23,8 @@ namespace {
 
 constexpr int SCREEN_W   = 792;
 constexpr int SCREEN_H   = 272;
-constexpr int NUM_COLS   = NUM_TRAIN_COLS + 1;      // + weather
-constexpr int COL_W      = SCREEN_W / NUM_COLS;     // 158
+// NUM_TRAIN_COLS is now a runtime value (from the fetched config), so the column
+// count and width are computed per-render inside displayRender (numCols/colW).
 
 constexpr int BULLET_CY  = 40;
 constexpr int BULLET_R   = 31;
@@ -207,13 +207,13 @@ void threeWords(const char* src, char* dst, size_t dstSize) {
 
 // The largest ladder font at which EVERY label fits the column width + band,
 // so all columns share one size (the size of the most-constrained label).
-const HelvFont* uniformStationFont(const char labels[][48], int count) {
+const HelvFont* uniformStationFont(const char labels[][48], int count, int colW) {
   int best = NUM_STATION_FONTS - 1;
   for (int c = 0; c < count; c++) {
     int idx = 0;
     for (int k = 0; k < NUM_STATION_FONTS; k++) {
       const HelvFont* f = STATION_FONTS[k];
-      if (f->height <= STATION_BAND && helvTextW(*f, labels[c]) <= COL_W - 8) idx = k;
+      if (f->height <= STATION_BAND && helvTextW(*f, labels[c]) <= colW - 8) idx = k;
     }
     if (idx < best) best = idx;
   }
@@ -228,13 +228,17 @@ void displayRender(const RouteArrivals* routes, size_t nRoutes, time_t now,
                    int rotation, const char* clock12, int ebikes) {
   Paint_Clear(WHITE);
 
-  drawWeather(COL_W / 2, wx, ebikes);
+  // Column count + width are driven by the runtime config (weather + N trains).
+  const int numCols = NUM_TRAIN_COLS + 1;
+  const int colW = SCREEN_W / numCols;
+
+  drawWeather(colW / 2, wx, ebikes);
 
   // Destination labels first (next train's terminal, or the fallback), each
   // capped to 3 words, so they can share one uniform size -- the largest at
   // which every column's label fits.
-  char labels[NUM_TRAIN_COLS][48];
-  int dir[NUM_TRAIN_COLS];
+  char labels[MAX_COLS][48];
+  int dir[MAX_COLS];
   for (int col = 0; col < NUM_TRAIN_COLS; col++) {
     const ColumnConfig& cc = COLUMNS[col];
     long bestMin = 100;                     // display caps at 99 min
@@ -249,7 +253,7 @@ void displayRender(const RouteArrivals* routes, size_t nRoutes, time_t now,
         if (cc.nFilter > 0) {
           bool ok = false;
           for (uint8_t k = 0; k < cc.nFilter; k++)
-            if (cc.destFilter[k] && strcmp(cc.destFilter[k], dn) == 0) { ok = true; break; }
+            if (cc.destFilter[k][0] && strcmp(cc.destFilter[k], dn) == 0) { ok = true; break; }
           if (!ok) continue;
         }
         if (m < bestMin) { bestMin = m; bestDest = dn; bestDestId = ra.dest[i]; }
@@ -259,17 +263,17 @@ void displayRender(const RouteArrivals* routes, size_t nRoutes, time_t now,
     threeWords(station, labels[col], sizeof(labels[col]));
     dir[col] = (bestMin <= 99) ? travelDir(routes[cc.routeIdx[0]].stopId, bestDestId) : -1;
   }
-  const HelvFont* sfont = uniformStationFont(labels, NUM_TRAIN_COLS);
+  const HelvFont* sfont = uniformStationFont(labels, NUM_TRAIN_COLS, colW);
   int stationY = STATION_TOP + (STATION_BAND - sfont->height) / 2;
 
   // Alert blurbs for columns that end up with no trains to show.
-  const char* blurbs[NUM_TRAIN_COLS];
-  char fallback[NUM_TRAIN_COLS][44];
+  const char* blurbs[MAX_COLS];
+  char fallback[MAX_COLS][44];
   int nBlurbs = 0;
 
   for (int col = 0; col < NUM_TRAIN_COLS; col++) {
     const ColumnConfig& cc = COLUMNS[col];
-    int cx = (col + 1) * COL_W + COL_W / 2;
+    int cx = (col + 1) * colW + colW / 2;
 
     // Bullet (the route label) + direction arrow to its left.
     EPD_DrawCircle(cx, BULLET_CY, BULLET_R, BLACK, 1);
@@ -284,7 +288,7 @@ void displayRender(const RouteArrivals* routes, size_t nRoutes, time_t now,
     char stbuf[48];
     strncpy(stbuf, labels[col], sizeof(stbuf) - 1);
     stbuf[sizeof(stbuf) - 1] = '\0';
-    for (int len = strlen(stbuf); len > 0 && helvTextW(*sfont, stbuf) > COL_W - 8; )
+    for (int len = strlen(stbuf); len > 0 && helvTextW(*sfont, stbuf) > colW - 8; )
       stbuf[--len] = '\0';
     helvCentered(*sfont, cx, stationY, stbuf, BLACK);
 
@@ -303,7 +307,7 @@ void displayRender(const RouteArrivals* routes, size_t nRoutes, time_t now,
           const char* dn = stopName(ra.dest[i]);
           bool ok = false;
           for (uint8_t k = 0; k < cc.nFilter; k++)
-            if (cc.destFilter[k] && strcmp(cc.destFilter[k], dn) == 0) { ok = true; break; }
+            if (cc.destFilter[k][0] && strcmp(cc.destFilter[k], dn) == 0) { ok = true; break; }
           if (!ok) continue;
         }
         int pos = n < ARRIVALS_SHOWN ? n : ARRIVALS_SHOWN - 1;
@@ -364,8 +368,8 @@ void displayRender(const RouteArrivals* routes, size_t nRoutes, time_t now,
   }
 
   // Column separators + bottom rule.
-  for (int c = 1; c < NUM_COLS; c++)
-    EPD_DrawLine(c * COL_W, 10, c * COL_W, RULE_Y - 8, BLACK);
+  for (int c = 1; c < numCols; c++)
+    EPD_DrawLine(c * colW, 10, c * colW, RULE_Y - 8, BLACK);
   EPD_DrawLine(0, RULE_Y, SCREEN_W - 1, RULE_Y, BLACK);
 
   // Bottom line: alert ticker on the left, clock on the right.
