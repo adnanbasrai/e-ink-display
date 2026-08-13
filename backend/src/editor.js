@@ -295,8 +295,12 @@ export const EDITOR_HTML = `<!doctype html>
 
   /* trains */
   .train{display:flex;align-items:center;gap:10px;margin-bottom:9px}
-  .train .sel{position:relative;flex:none;width:74px}
-  .train .sel select{padding-left:32px}
+  /* 32px of left padding clears the bullet and the caret takes another 34px,
+     which left the line letter about 8px to sit in. Wider, plus a tighter
+     caret gutter, so the extra room actually goes to the content. */
+  .train .sel{position:relative;flex:none;width:82px}
+  .train .sel select{padding-left:33px;padding-right:24px;
+    background-position:calc(100% - 13px) 50%,calc(100% - 8px) 50%}
   .train .sel .rb{position:absolute;left:7px;top:50%;transform:translateY(-50%);
     pointer-events:none;width:19px;height:19px;font-size:10.5px}
   .train .dest{flex:1;min-width:0}
@@ -508,7 +512,7 @@ export const EDITOR_HTML = `<!doctype html>
     <div class="bar-in">
       <div class="status" id="status" role="status" aria-live="polite"></div>
       <button class="btn btn-ghost" id="previewBtn">Preview</button>
-      <button class="btn" id="saveBtn">Save<span class="wide">&nbsp;to board</span></button>
+      <button class="btn" id="saveBtn">Save<span class="wide"> to board</span></button>
     </div>
   </div>
 </div>
