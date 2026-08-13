@@ -32,7 +32,8 @@
 
 #define EPD_POWER_PIN 7      // panel power enable -- must be HIGH or screen stays blank
 #define POWER_LED_PIN 41
-#define BOOT_BTN_PIN 0        // BOOT button (GPIO0) on ESP32-S3 dev boards
+// (BOOT/GPIO0 button handling lives entirely in wifi_provision.{h,cpp} -- it
+// must never be sampled at boot/reset time; see the warning there.)
 
 #define FEED_BUF_SIZE (1536 * 1024)  // Citi Bike station_status is ~960 KB (PSRAM)
 #define NYC_TZ "EST5EDT,M3.2.0/2,M11.1.0/2"
@@ -132,6 +133,10 @@ static size_t fetchFeed(const char* url) {
   size_t total = 0;
   uint32_t lastData = millis();
   while (http.connected() && millis() - lastData < (uint32_t)HTTP_TIMEOUT_MS) {
+    wifiPollReprovisionButton(splash);  // every fetch goes through here -- the
+                                         // single biggest multi-second gap where
+                                         // a BOOT long-press would otherwise go
+                                         // undetected (e.g. the ~960 KB Citi Bike fetch)
     if (expected > 0 && total >= (size_t)expected) break;
     size_t avail = stream->available();
     if (!avail) { delay(10); continue; }
@@ -350,20 +355,19 @@ void setup() {
     ESP.restart();
   }
 
-  // Hold BOOT (GPIO0) at power-on to forget the saved network and re-run the
-  // setup portal -- e.g. a friend's WiFi password changed. (On an enclosed
-  // board where GPIO0 isn't reachable, re-flashing has the same effect.)
-  pinMode(BOOT_BTN_PIN, INPUT_PULLUP);
-  delay(20);
-  if (digitalRead(BOOT_BTN_PIN) == LOW) {
-    Serial.println("BOOT held at power-on -> forgetting saved WiFi");
-    wifiForget();
-  }
+  // Was a re-provision requested last run (a ~3s BOOT hold during NORMAL
+  // operation -- see wifiPollReprovisionButton(), called from loop())? Deliberately
+  // NOT a raw GPIO0 read here: sampling that pin at boot/reset time is unsafe
+  // (it's the chip's hardware boot-mode-select strap -- see wifi_provision.h).
+  // A set flag also means it skips straight to the portal without secrets.h's
+  // dev fallback silently reconnecting and masking the request.
+  bool forcePortal = wifiConsumeReprovisionFlag();
+  if (forcePortal) Serial.println("reprovision requested -> forcing WiFi setup portal");
 
   splash("NYC Subway", "Connecting to WiFi...");
 
-  if (!ensureWiFi()) {
-    if (wifiHasStoredCreds()) {
+  if (forcePortal || !ensureWiFi()) {
+    if (!forcePortal && wifiHasStoredCreds()) {
       // Known network, just unreachable right now (e.g. the router is
       // rebooting too). Don't force a stranger into re-provisioning -- retry
       // like before. loop() also tolerates later drops via ensureWiFi().
@@ -371,10 +375,10 @@ void setup() {
       delay(15000);
       ESP.restart();
     }
-    // Nothing configured at all -- a fresh/unboxed board, or BOOT was just
-    // held. Broadcast our own hotspot with a setup page until someone (a
-    // friend, on their phone) picks a network. wifiRunPortal() restarts the
-    // board itself once that succeeds, so this call does not return.
+    // Nothing configured at all (fresh/unboxed board), or BOOT was held.
+    // Broadcast our own hotspot with a setup page until someone (a friend,
+    // on their phone) picks a network. wifiRunPortal() restarts the board
+    // itself once that succeeds, so this call does not return.
     wifiRunPortal(splash);
     delay(2000);
     ESP.restart();   // defensive; shouldn't be reached
@@ -417,6 +421,7 @@ void setup() {
 // ticks -- so the screen flips exactly as the displayed time changes, once
 // every 60 seconds.
 void loop() {
+  wifiPollReprovisionButton(splash);   // covers the case the wait-spins below get skipped
   time_t now = time(nullptr);
   time_t target = (now / 60 + 1) * 60;
   bool withAlerts = ((target / 60) % ALERTS_EVERY_MIN) == 0;
@@ -426,7 +431,7 @@ void loop() {
   int prefetch = 20 + (withAlerts ? 20 : 0) + (withWeather ? 5 : 0)
                     + (withCitibike ? 15 : 0) + (withConfig ? 5 : 0);
 
-  while (time(nullptr) < target - prefetch) delay(200);
+  while (time(nullptr) < target - prefetch) { wifiPollReprovisionButton(splash); delay(200); }
 
   uint32_t t0 = millis();
   if (!ensureWiFi()) {
@@ -444,6 +449,6 @@ void loop() {
   }
   Serial.printf("fetch took %lu ms (alerts=%d)\n", millis() - t0, withAlerts);
 
-  while (time(nullptr) < target) delay(50);
+  while (time(nullptr) < target) { wifiPollReprovisionButton(splash); delay(50); }
   renderBoard();
 }

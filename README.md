@@ -89,11 +89,19 @@ themselves. No laptop, no re-flash, nobody sees anybody else's password.
    wrong, nothing is saved and you can try again. On success it saves the
    network and restarts onto it.
 
-**To re-run setup later** (e.g. the WiFi password changed): hold the **BOOT**
-button while powering the board on. That forgets the saved network and starts
-the hotspot again. (On an enclosed board where BOOT isn't reachable, a
+**To re-run setup later** (e.g. the WiFi password changed): while the board is
+already running normally (showing the subway board — **not** while it's
+powering on or restarting), press and hold the **BOOT** button for about 3
+seconds. The screen will confirm; release the button, and the board restarts
+into the setup hotspot. (On an enclosed board where BOOT isn't reachable, a
 re-flash has the same effect — nothing else about the board's settings is
 lost, since those live on the backend, not on the device.)
+
+> GPIO0/BOOT is the chip's hardware boot-mode-select pin, so it's deliberately
+> **not** checked at power-on/reset (holding it right then would drop the chip
+> into the USB flashing bootloader instead of running the app at all — it'd
+> just look like nothing happened). Long-pressing it during normal operation,
+> well after boot, is safe and is what triggers re-provisioning.
 
 A board with a known network that's just temporarily unreachable (router
 rebooting, etc.) does **not** drop into setup mode on its own — it retries the

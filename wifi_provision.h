@@ -27,6 +27,28 @@ bool wifiTryStored(uint32_t timeoutMs);
 // (optional) updates the e-ink screen with the hotspot name and progress.
 void wifiRunPortal(WifiStatusFn onStatus = nullptr);
 
-// Clear the saved network (forces the portal on next boot). Used when the
-// BOOT button is held at power-on to re-provision (e.g. the password changed).
+// Clear the saved network (forces the portal on next boot, once combined with
+// wifiMarkReprovision() -- see below -- so a leftover secrets.h dev fallback
+// can't silently resurrect the old connection).
 void wifiForget();
+
+// IMPORTANT: GPIO0 ("BOOT") is the ESP32's hardware boot-mode-select pin,
+// sampled by the chip's ROM at the *exact instant* of reset -- before any of
+// our code runs. If it's held LOW right then, the chip drops into the USB
+// flashing bootloader instead of running the app at all (silently -- the
+// e-ink panel just keeps showing whatever was last drawn, which looks
+// exactly like "nothing happened"). So the button must NEVER be read at
+// boot/reset time; the safe pattern is: watch it during NORMAL running
+// (long after boot-mode selection is long over), and if a request is
+// detected, wait for the button to be RELEASED before ever restarting.
+
+// Call from loop() (frequently -- e.g. inside existing polling delays, not
+// just once per minute) to detect a ~3s hold of the BOOT button during
+// normal operation. On a long-press it blocks waiting for release, marks a
+// persistent reprovision request, forgets the saved network, and restarts --
+// so this call does not return once a long-press fires.
+void wifiPollReprovisionButton(WifiStatusFn onStatus = nullptr);
+
+// Checked once in setup(): true if wifiPollReprovisionButton() requested a
+// re-provision on the previous run. Consumes (clears) the flag.
+bool wifiConsumeReprovisionFlag();

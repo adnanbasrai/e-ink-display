@@ -147,17 +147,12 @@ String wifiApSsid() {
 bool wifiHasStoredCreds() {
   bool has = false;
   Preferences p;
-  bool opened = p.begin("wifi", true);
-  if (opened) {
+  if (p.begin("wifi", true)) {
     has = p.getString("ssid", "").length() > 0;
     p.end();
   }
-  Serial.printf("wifi debug: nvs_open=%d nvs_has_ssid=%d\n", opened, has);
 #if defined(WIFI_SSID)
-  Serial.printf("wifi debug: secrets.h fallback ssid=\"%s\"\n", WIFI_SSID);
   if (!has && WIFI_SSID[0]) has = true;   // dev fallback (secrets.h), optional
-#else
-  Serial.println("wifi debug: WIFI_SSID macro NOT defined in this TU");
 #endif
   return has;
 }
@@ -190,6 +185,55 @@ bool wifiTryStored(uint32_t timeoutMs) {
 void wifiForget() {
   Preferences p;
   if (p.begin("wifi", false)) { p.clear(); p.end(); }
+}
+
+// GPIO0 ("BOOT") -- owned entirely by this module now; see the big warning in
+// wifi_provision.h about why it must never be sampled at boot/reset time.
+#define WIFI_BOOT_BTN_PIN 0
+#define WIFI_HOLD_MS 3000   // how long a press must be held to count
+
+// The reprovision flag lives in ITS OWN namespace, separate from "wifi" --
+// wifiForget() clears the whole "wifi" namespace, and if the flag lived
+// there too it would erase itself before the next boot ever saw it.
+bool wifiConsumeReprovisionFlag() {
+  Preferences p;
+  bool set = false;
+  if (p.begin("boot", false)) {
+    set = p.getUChar("reprov", 0) != 0;
+    if (set) p.putUChar("reprov", 0);
+    p.end();
+  }
+  return set;
+}
+
+namespace {
+void markReprovision() {
+  Preferences p;
+  if (p.begin("boot", false)) { p.putUChar("reprov", 1); p.end(); }
+}
+}  // namespace
+
+void wifiPollReprovisionButton(WifiStatusFn onStatus) {
+  static bool pinReady = false;
+  static uint32_t heldSince = 0;
+  if (!pinReady) { pinMode(WIFI_BOOT_BTN_PIN, INPUT_PULLUP); pinReady = true; }
+
+  bool held = (digitalRead(WIFI_BOOT_BTN_PIN) == LOW);
+  if (!held) { heldSince = 0; return; }
+  if (!heldSince) { heldSince = millis(); return; }
+  if (millis() - heldSince < WIFI_HOLD_MS) return;
+
+  Serial.println("BOOT held during normal operation -> WiFi setup requested");
+  if (onStatus) onStatus("Release the button now", "to reset WiFi setup...");
+  // Wait for release BEFORE restarting -- restarting while GPIO0 is still
+  // held would strand the chip in the flashing bootloader (see the header).
+  while (digitalRead(WIFI_BOOT_BTN_PIN) == LOW) delay(50);
+
+  markReprovision();
+  wifiForget();
+  if (onStatus) onStatus("WiFi setup requested", "Restarting...");
+  delay(500);
+  ESP.restart();   // does not return
 }
 
 void wifiRunPortal(WifiStatusFn onStatus) {
