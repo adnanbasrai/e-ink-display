@@ -171,12 +171,20 @@ class BoardState:
             return "data %d min old  %s" % (age_min, clock)
         return clock
 
+    def _date_str(self):
+        """Short day + date for the board's bottom bar, e.g. "Tue, Aug 12"."""
+        now_t = time.time()
+        dt = time.localtime(now_t) if _NY is None else _to_ny(now_t)
+        return time.strftime("%a, %b %-d", dt)
+
     def render_png(self):
         now_t = int(time.time())
         img = render.render(self.arrivals, self.alerts, self.weather,
                             now_t, self.refresh_count, self._bottom_right(),
                             stop_names=self.stop_names, ebikes=self.ebikes,
-                            stop_coords=self.stop_coords, cfg=self.cfg)
+                            stop_coords=self.stop_coords, cfg=self.cfg,
+                            layout=getattr(self.cfg, "LAYOUT", "R"),
+                            date_str=self._date_str())
         buf = io.BytesIO()
         img.save(buf, "PNG")
         return buf.getvalue()

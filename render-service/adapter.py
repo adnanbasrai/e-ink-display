@@ -39,6 +39,8 @@ def cfg_from_device(config):
         for col in config["columns"]
     ]
     c.ARRIVALS_SHOWN = int(config.get("arrivals_shown", 3))
+    # Board style: "R" Refined Signage / "H" Hero Digit / "P" Platform Cards.
+    c.LAYOUT = str(config.get("layout", "R")).upper()
     c.NUM_FEEDS = len(FEED_URLS)
     c.FEED_URLS = FEED_URLS
     c.FEED_ALERTS = FEED_ALERTS

@@ -53,6 +53,22 @@ export const EDITOR_HTML = `<!doctype html>
   .panel img { display:block; width:100%; height:auto; image-rendering:pixelated; }
   .hidden { display:none; }
   small { color:#7d8590; }
+  /* board style picker */
+  .styles { display:flex; gap:8px; flex-wrap:wrap; }
+  .styles button {
+    flex:1 1 150px; text-align:left; padding:10px 12px; border-radius:9px;
+    border:1px solid #2a2f37; background:#0f1114; color:#c9ced6; font-weight:600;
+    display:flex; align-items:center; gap:9px; transition:border-color .15s, background .15s;
+  }
+  .styles button:hover { background:#171b21; }
+  .styles button.on { border-color:#2d6; background:#132018; color:#e6e9ee; }
+  .styles button .key {
+    width:20px; height:20px; border-radius:50%; background:#2a2f37; color:#c9ced6;
+    display:flex; align-items:center; justify-content:center; font-size:11px;
+    font-weight:800; flex:none;
+  }
+  .styles button.on .key { background:#2d6; color:#08130a; }
+  .hint { font-size:12.5px; color:#6e747d; margin-top:7px; min-height:16px; }
 </style></head>
 <body>
   <h1>SubwayBoard <span>editor</span></h1>
@@ -77,6 +93,12 @@ export const EDITOR_HTML = `<!doctype html>
     <div class="sec">
       <div class="lab">Board name</div>
       <input id="name" placeholder="My Board">
+    </div>
+
+    <div class="sec">
+      <div class="lab">Board style</div>
+      <div class="styles" id="styles"></div>
+      <div class="hint" id="styleHint"></div>
     </div>
 
     <div class="sec">
@@ -138,6 +160,11 @@ let token = sessionStorage.getItem("sb_token");
 let deviceId = sessionStorage.getItem("sb_device");
 let edit = null;
 const LINES = ["1","2","3","4","5","6","7","A","C","E","B","D","F","M","N","Q","R","W","G","J","Z","L","S"];
+const STYLES = [
+  { id:"R", name:"Refined", blurb:"Classic five-column board, framed and tightened." },
+  { id:"H", name:"Hero Digit", blurb:"One huge number per line — readable from across a room." },
+  { id:"P", name:"Cards", blurb:"Each line on its own bordered card." },
+];
 
 function setMsg(el, text, ok) { el.textContent = text; el.className = "msg " + (ok ? "ok" : "err"); }
 const debounce = (fn, ms=250) => { let t; return (...a)=>{ clearTimeout(t); t=setTimeout(()=>fn(...a),ms); }; };
@@ -188,8 +215,27 @@ async function startEditor(displayName, name) {
   renderBefore();
 }
 
+function renderStyles() {
+  const box = $("styles"); box.innerHTML = "";
+  STYLES.forEach(s => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = (edit.layout || "R") === s.id ? "on" : "";
+    b.innerHTML = '<span class="key">' + s.id + '</span>' + s.name;
+    b.onclick = () => {
+      edit.layout = s.id;
+      renderStyles();
+      doPreview();          // show this style with your real live data
+    };
+    box.appendChild(b);
+  });
+  const cur = STYLES.find(s => s.id === (edit.layout || "R"));
+  $("styleHint").textContent = cur ? cur.blurb : "";
+}
+
 function fillForm() {
   $("name").value = edit.name || "";
+  renderStyles();
   $("addrPick").textContent = edit.weather ? ("✓ " + (edit.weather.lat).toFixed(4) + ", " + (edit.weather.lon).toFixed(4)) : "";
   $("homePick").textContent = edit.home && edit.home.name ? ("✓ " + edit.home.name) : "";
   $("cbPick").textContent = edit.citibike && edit.citibike.name ? ("✓ " + edit.citibike.name)

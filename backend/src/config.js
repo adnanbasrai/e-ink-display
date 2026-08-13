@@ -25,6 +25,15 @@ export function feedForLine(line) {
 
 export const LIMITS = { MAX_ROUTES: 12, MAX_COLS: 4, MAX_MERGE: 2, MAX_FILTER: 2 };
 
+// Board styles the renderer can draw. Keep these keys in sync with
+// emulator/render.py's LAYOUTS dict.
+export const LAYOUTS = [
+  { id: "R", name: "Refined Signage", blurb: "Classic five-column board, framed and tightened" },
+  { id: "H", name: "Hero Digit", blurb: "One huge number per line, readable across a room" },
+  { id: "P", name: "Platform Cards", blurb: "Each line on its own bordered card" },
+];
+const LAYOUT_IDS = LAYOUTS.map((l) => l.id);
+
 // GTFS direction suffix (N/S) for a train at `home` heading toward a destination.
 // The MTA labels every line N/S even when it runs E-W (the 7, L, ...), so we pick
 // the dominant axis of the bearing and map East->N, West->S (which matches the
@@ -89,8 +98,12 @@ export function resolveConfig(edit, prevRev = 0) {
     };
   });
 
+  const layout = LAYOUT_IDS.includes(String(edit.layout || "").toUpperCase())
+    ? String(edit.layout).toUpperCase() : "R";
+
   return {
     config_rev: prevRev + 1,
+    layout,
     weather: {
       lat: Number(edit.weather?.lat), lon: Number(edit.weather?.lon),
       tz: edit.weather?.tz || "America/New_York",
@@ -111,6 +124,7 @@ export function resolveConfig(edit, prevRev = 0) {
 export function makeDefaultEdit() {
   return {
     name: "My Board",
+    layout: "R",
     weather: { lat: 40.7527, lon: -73.9772, tz: "America/New_York" },
     citibike: { station_id: "66dea8ff-0aca-11e7-82f6-3863bb44ef7c", name: "E 44 St & 2 Ave" },
     cadence: { alerts_every_min: 5, weather_every_min: 30, citibike_every_min: 2 },
