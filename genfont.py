@@ -68,14 +68,29 @@ def bake_image(name, img, thresh=110):
     print(f"symbol {name}: {w}x{h} (hand-drawn)")
     return dict(name=name, w=w, h=h, data=data)
 
+DIGITS = '0123456789'
+
 fonts = [
+    # --- Refined Signage (the original board) ---
     render_font('helv11',  HELV, 0, 11, ASCII + DEG),   # destination auto-fit ladder
     render_font('helv15',  HELV, 0, 15, ASCII + DEG),
     render_font('helv19',  HELV, 0, 19, ASCII + DEG),
     render_font('helv23',  HELV, 0, 23, ASCII + DEG),
     render_font('helv18',  HELV, 0, 18, ASCII + DEG),
     render_font('helv28b', HELV, 1, 28, ASCII + DEG),
-    render_font('helv40b', HELV, 1, 40, '0123456789/' + DEG),
+    render_font('helv40b', HELV, 1, 40, DIGITS + '/' + DEG),
+    # --- Hero Digit + Platform Cards ---
+    # These must stay in lock-step with emulator/render.py's named faces; the
+    # panel can only draw a size that was baked here. The two hero faces are
+    # digits-only (they never draw anything else) to keep the tables small.
+    render_font('helv12b', HELV, 1, 12, ASCII + DEG),
+    render_font('helv13b', HELV, 1, 13, ASCII + DEG),
+    render_font('helv15b', HELV, 1, 15, ASCII + DEG),
+    render_font('helv19b', HELV, 1, 19, ASCII + DEG),
+    render_font('helv32b', HELV, 1, 32, ASCII + DEG),
+    render_font('helv48b', HELV, 1, 48, DIGITS),
+    render_font('helv74b', HELV, 1, 74, DIGITS),
+    render_font('helv14',  HELV, 0, 14, ASCII + DEG),
 ]
 import iconlib
 symbols = [
@@ -90,6 +105,13 @@ symbols += [
     bake_image('icon_arr_e', _arrow.transpose(Image.ROTATE_270)),
     bake_image('icon_arr_s', _arrow.transpose(Image.ROTATE_180)),
     bake_image('icon_arr_w', _arrow.transpose(Image.ROTATE_90)),
+]
+_arrow_sm = iconlib.draw_arrow(15)      # small arrows: Hero Digit / Cards headers
+symbols += [
+    bake_image('icon_arrsm_n', _arrow_sm),
+    bake_image('icon_arrsm_e', _arrow_sm.transpose(Image.ROTATE_270)),
+    bake_image('icon_arrsm_s', _arrow_sm.transpose(Image.ROTATE_180)),
+    bake_image('icon_arrsm_w', _arrow_sm.transpose(Image.ROTATE_90)),
 ]
 
 out = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'helvfont.h'), 'w')

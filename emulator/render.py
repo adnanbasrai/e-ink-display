@@ -126,15 +126,30 @@ helv40b = HelvFont(HELV_BOLD, HELV_BOLD_IDX, 40, "0123456789/" + DEG)
 _font_cache = {}
 
 
-def _font(px, bold=False):
+def _font(px, bold=False, charset=None):
     key = (px, bold)
     f = _font_cache.get(key)
     if f is None:
         path = HELV_BOLD if bold else HELV
         idx = HELV_BOLD_IDX if bold else HELV_IDX
-        f = HelvFont(path, idx, px, _ASCII + DEG)
+        f = HelvFont(path, idx, px, charset or (_ASCII + DEG))
         _font_cache[key] = f
     return f
+
+
+# The exact faces the Hero Digit / Platform Cards layouts use. These names and
+# sizes must stay in lock-step with genfont.py, which bakes the identical set
+# into helvfont.h for the firmware -- the panel can only draw sizes that were
+# baked, so adding a size here means adding it there too.
+_DIGITS = "0123456789"
+helv12b = _font(12, bold=True)
+helv13b = _font(13, bold=True)
+helv15b = _font(15, bold=True)
+helv19b = _font(19, bold=True)
+helv32b = _font(32, bold=True)
+helv48b = _font(48, bold=True, charset=_DIGITS)   # hero number (Cards)
+helv74b = _font(74, bold=True, charset=_DIGITS)   # hero number (Hero Digit)
+helv14 = _font(14)
 
 # Small unit face for the "min" label (~65% of the bold arrival number).
 # Drop to helv15 for a ~50% look.
@@ -401,15 +416,8 @@ def _render_hero(fb, draw, cols, blurbs, weather_info, ebikes, rotation,
     n_cols = max(1, len(cols))
     col_w = SCREEN_W // n_cols
 
-    f_temp = _font(32, bold=True)
-    f_small = _font(13, bold=True)
-    f_clock = _font(19, bold=True)
-    f_date = _font(12, bold=True)
-    f_hero = _font(74, bold=True)
-    f_unit = _font(13, bold=True)
-    f_also = _font(15, bold=True)
-    f_dest = _font(12, bold=True)
-    f_tick = _font(14)
+    f_temp, f_small, f_clock, f_date = helv32b, helv13b, helv19b, helv12b
+    f_hero, f_unit, f_also, f_dest, f_tick = helv74b, helv13b, helv15b, helv12b, helv14
 
     # Weather strip across the top.
     if weather_info.valid:
@@ -450,7 +458,7 @@ def _render_hero(fb, draw, cols, blurbs, weather_info, ebikes, rotation,
             arrow.draw(fb, ax, hy - arrow.h // 2, BLACK)
         bx = ax + aw + (7 if aw else 0) + r
         draw.ellipse([bx - r, hy - r, bx + r, hy + r], fill=BLACK)
-        lab = _font(12 if len(c["label"]) > 2 else 14, bold=True)
+        lab = helv12b if len(c["label"]) > 2 else helv15b
         lab.centered(fb, bx, hy - lab.height // 2, c["label"], WHITE)
         dx = bx + r + 6
         f_dest.draw(fb, dx, hy - f_dest.height // 2,
@@ -494,18 +502,12 @@ def _render_cards(fb, draw, cols, blurbs, weather_info, ebikes, rotation,
     card_w = (SCREEN_W - margin * 2 - gap * (n - 1)) // n
     card_top, card_bot = 14, 222
 
-    f_date = _font(13, bold=True)
-    f_temp = _font(32, bold=True)
-    f_row = _font(12, bold=True)
-    f_hdr = _font(12, bold=True)
-    f_big = _font(48, bold=True)
-    f_unit = _font(12, bold=True)
-    f_chip = _font(13, bold=True)
-    f_foot = _font(13)
+    f_date, f_temp, f_row, f_hdr = helv13b, helv32b, helv12b, helv12b
+    f_big, f_unit, f_chip, f_foot = helv48b, helv12b, helv13b, helv14
 
     def card(x):
-        draw.rounded_rectangle([x, card_top, x + card_w, card_bot],
-                               radius=6, outline=BLACK, width=2)
+        draw.rectangle([x, card_top, x + card_w, card_bot],
+                       outline=BLACK, width=2)
 
     # ---- weather card ----
     x = margin
@@ -534,8 +536,8 @@ def _render_cards(fb, draw, cols, blurbs, weather_info, ebikes, rotation,
 
         # Header row: bullet chip left, direction arrow pinned right.
         chip_w = 18 + f_chip.text_w(c["label"])
-        draw.rounded_rectangle([x + 10, card_top + 8, x + 10 + chip_w, card_top + 28],
-                               radius=3, fill=BLACK)
+        draw.rectangle([x + 10, card_top + 8, x + 10 + chip_w, card_top + 28],
+                       fill=BLACK)
         f_chip.centered(fb, x + 10 + chip_w // 2,
                         card_top + 18 - f_chip.height // 2, c["label"], WHITE)
         arrow = ARROWS_SM.get(c["direction"])
@@ -565,16 +567,16 @@ def _render_cards(fb, draw, cols, blurbs, weather_info, ebikes, rotation,
             txt = ("%d MIN (%s)" % (m, who)) if c["tag"] else ("%d MIN" % m)
             w = f_chip.text_w(txt) + 18
             w = min(w, card_w - 24)
-            draw.rounded_rectangle([x + 12, cy, x + 12 + w, cy + 24],
-                                   radius=4, outline=BLACK, width=1)
+            draw.rectangle([x + 12, cy, x + 12 + w, cy + 24],
+                           outline=BLACK, width=1)
             f_chip.centered(fb, x + 12 + w // 2, cy + 12 - f_chip.height // 2,
                             _fit(f_chip, txt, w - 8), BLACK)
             cy += 30
 
     # ---- footer strip, below the cards (never overlapping them) ----
     fy0, fy1 = 232, 258
-    draw.rounded_rectangle([margin, fy0, SCREEN_W - margin, fy1],
-                           radius=4, outline=BLACK, width=1)
+    draw.rectangle([margin, fy0, SCREEN_W - margin, fy1],
+                   outline=BLACK, width=1)
     right = clock12 or ""
     rw = f_foot.text_w(right)
     f_foot.draw(fb, SCREEN_W - margin - rw - 10, fy0 + 6, right, BLACK)

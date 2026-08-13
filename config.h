@@ -61,3 +61,6 @@ extern char         CITIBIKE_STATION_ID[40]; // "" = hide the e-bike row
 extern char         DISPLAY_ID[16];          // shown on screen for sign-in
 extern char         DEVICE_PIN[12];          // shown until the board is claimed
 extern uint32_t     CONFIG_REV;
+// Board style, chosen on the website: 'R' Refined Signage (default),
+// 'H' Hero Digit, 'P' Platform Cards. See display.h.
+extern char         LAYOUT;

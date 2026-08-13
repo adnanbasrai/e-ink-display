@@ -22,6 +22,7 @@ char         CITIBIKE_STATION_ID[40];
 char         DISPLAY_ID[16] = "";
 char         DEVICE_PIN[12] = "";
 uint32_t     CONFIG_REV = 0;
+char         LAYOUT = 'R';
 
 // Stable per-board id: the WiFi MAC, colons stripped, lowercase (e.g. 1cdbd455da5c).
 String deviceId() {
@@ -89,6 +90,10 @@ bool configParse(const char* json) {
   strlcpy(DISPLAY_ID, doc["display_id"] | "", sizeof(DISPLAY_ID));
   strlcpy(DEVICE_PIN, doc["pin"] | "", sizeof(DEVICE_PIN));   // null (claimed) -> ""
   CONFIG_REV = doc["config_rev"] | 0;
+  // Board style; anything unrecognised falls back to Refined Signage so a
+  // future style added server-side can't leave an old board drawing nothing.
+  const char* lay = doc["layout"] | "R";
+  LAYOUT = (lay[0] == 'H' || lay[0] == 'P') ? lay[0] : 'R';
   return true;
 }
 
@@ -96,7 +101,7 @@ bool configParse(const char* json) {
 // unavailable so a fresh/offline board still shows something.
 void configLoadDefault() {
   static const char* DEFAULT_JSON =
-    "{\"config_rev\":0,"
+    "{\"config_rev\":0,\"layout\":\"R\","
     "\"weather\":{\"lat\":40.7527,\"lon\":-73.9772,\"tz\":\"America/New_York\"},"
     "\"citibike\":{\"station_id\":\"66dea8ff-0aca-11e7-82f6-3863bb44ef7c\"},"
     "\"routes\":["

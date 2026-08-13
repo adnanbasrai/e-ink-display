@@ -283,8 +283,9 @@ static bool fetchConfig() {
     return false;
   }
   configSaveRaw((const char*)feedBuf);
-  Serial.printf("config rev %u: %u routes / %u cols, id=%s pin=%s\n",
-                (unsigned)CONFIG_REV, NUM_ROUTES, NUM_TRAIN_COLS, DISPLAY_ID, DEVICE_PIN);
+  Serial.printf("config rev %u: %u routes / %u cols, layout=%c, id=%s pin=%s\n",
+                (unsigned)CONFIG_REV, NUM_ROUTES, NUM_TRAIN_COLS, LAYOUT,
+                DISPLAY_ID, DEVICE_PIN);
   return true;
 }
 
@@ -320,7 +321,14 @@ static void renderBoard() {
   else
     snprintf(bottomRight, sizeof(bottomRight), "%s", clockTrim);
 
-  displayRender(arrivals, NUM_ROUTES, now, routeAlerts, weather, refreshCount, bottomRight, ebikes);
+  char dateBuf[24];
+  strftime(dateBuf, sizeof(dateBuf), "%a, %b %e", &tm_now);
+  // %e space-pads single digits ("Aug  5"); squeeze that to one space.
+  for (char* p = dateBuf; *p; p++)
+    if (p[0] == ' ' && p[1] == ' ') { memmove(p, p + 1, strlen(p)); break; }
+
+  displayRender(arrivals, NUM_ROUTES, now, routeAlerts, weather, refreshCount,
+                bottomRight, ebikes, dateBuf);
 
   uint32_t t0 = millis();
   pushClean();                 // white-flush + redraw, every minute
