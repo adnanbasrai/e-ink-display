@@ -76,6 +76,11 @@ bool configParse(const char* json) {
     cc.nFilter = 0;
     for (const char* d : c["dest_filter"].as<JsonArray>())
       if (cc.nFilter < MAX_FILTER) strlcpy(cc.destFilter[cc.nFilter++], d ? d : "", 40);
+    // Commuter rail only; absent (or empty) on subway columns. Anything other
+    // than a compass letter means "no filter" rather than "match nothing".
+    const char* df = c["dir_filter"] | "";
+    cc.dirFilter = (df[0] == 'N' || df[0] == 'E' || df[0] == 'S' || df[0] == 'W')
+                   ? df[0] : 0;
     nc++;
   }
 

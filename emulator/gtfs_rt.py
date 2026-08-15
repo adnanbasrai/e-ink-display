@@ -171,7 +171,16 @@ def _parse_stop_time_update(c):
     return stop_id, arrival, departure
 
 
-def _parse_trip_update(c, routes_by_key):
+def agency_prefix(stop_id):
+    """Leading agency letter of a configured stop id ("" for the subway).
+
+    Subway stop ids are always numeric, so a leading letter unambiguously means
+    a namespaced commuter-rail id ("L237", "M124"). See emulator/stops.py.
+    """
+    return stop_id[0] if stop_id and stop_id[0].isalpha() else ""
+
+
+def _parse_trip_update(c, routes_by_key, min_time=0):
     route_id = ""
     pending = []  # (stop_id, arrival, departure)
     while c.p < c.end:
@@ -206,21 +215,38 @@ def _parse_trip_update(c, routes_by_key):
     if not route_id:
         return
     # The trip's stop_time_updates run in stop order, so the last one is the
-    # terminal -- where this train is going.
+    # terminal -- where this train is going. This is also what gives commuter
+    # rail a direction: Metro-North's feed omits direction_id entirely, so
+    # "which way is this train going" can only come from where it ends up.
     terminal = pending[-1][0] if pending else ""
-    for (route, stop_id), ra in routes_by_key.items():
+    for (route, stop_id), (ra, prefix) in routes_by_key.items():
         if route != route_id:
+            continue
+        # A train that ENDS at our stop can't be boarded there, so it isn't a
+        # departure. Terminals make this obvious -- at Grand Central, half of
+        # Metro-North's trips terminate at Grand Central -- but it's equally
+        # true of a subway train ending its run at your station.
+        if terminal and terminal == stop_id:
             continue
         for (sid, arr, dep) in pending:
             if sid != stop_id:
                 continue
             t = arr if arr else dep
-            if t:
-                ra.insert_sorted(t, terminal)
+            if t and t >= min_time:
+                # Feed ids are bare; re-apply the agency prefix so the terminal
+                # resolves against the shared (namespaced) stop table.
+                ra.insert_sorted(t, prefix + terminal if terminal else "")
 
 
-def gtfs_rt_parse(buf, routes):
+def gtfs_rt_parse(buf, routes, now=0):
     """Parse a FeedMessage; append arrivals into the given RouteArrivals list.
+
+    `now` (unix seconds) drops stop times that have already passed. This matters
+    for commuter rail: the LIRR and Metro-North feeds carry the whole service
+    day, including trips that left hours ago, so without it the MAX_ARRIVALS cap
+    fills with departed trains and the board reads "no service". The subway feed
+    only publishes the near future, so it's unaffected either way. Pass 0 to
+    keep everything (tests replaying a captured feed).
 
     Returns the number of FeedEntity records seen, or -1 on malformed protobuf.
     A return of 0 means the body carried no entities at all -- e.g. an empty or
@@ -230,7 +256,16 @@ def gtfs_rt_parse(buf, routes):
     that genuinely has no service still shows up as a non-empty feed whose
     entities simply don't match that route, so this doesn't mask real outages.)
     """
-    routes_by_key = {(r.route, r.stop_id): r for r in routes}
+    # Key on the BARE stop id, since that's what the feed carries, and keep the
+    # agency prefix alongside so destinations can be re-namespaced on the way
+    # out. Routes are already scoped to one feed by the caller, which is what
+    # keeps LIRR's route "1" (Babylon) from matching the subway's "1".
+    routes_by_key = {}
+    for r in routes:
+        p = agency_prefix(r.stop_id)
+        routes_by_key[(r.route, r.stop_id[len(p):])] = (r, p)
+    # 60s of slack so a train arriving right now isn't dropped mid-render.
+    min_time = (now - 60) if now else 0
     c = _Cursor(buf, 0, len(buf))
     n_entities = 0
     while c.p < c.end:
@@ -251,7 +286,7 @@ def gtfs_rt_parse(buf, routes):
                     tu, ok = _enter(entity)
                     if not ok:
                         return -1
-                    _parse_trip_update(tu, routes_by_key)
+                    _parse_trip_update(tu, routes_by_key, min_time)
                 elif not _skip_field(entity, t2 & 7):
                     return -1
         elif not _skip_field(c, wire):

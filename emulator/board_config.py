@@ -15,10 +15,22 @@ FEED_IRT = "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs" 
 FEED_BDFM = "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-bdfm"
 FEED_NQRW = "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-nqrw"
 FEED_ACE = "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-ace"
-FEED_ALERTS = "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/camsys%2Fsubway-alerts"
+# Commuter rail: same TripUpdate shape as the subway, so the same parser reads
+# them. Their route/stop ids collide with the subway's, which is why routes are
+# matched per feed and rail stop ids are namespaced (see FEED_AGENCY).
+FEED_LIRR = "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/lirr%2Fgtfs-lirr"
+FEED_MNR = "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/mnr%2Fgtfs-mnr"
 
-FEED_URLS = [FEED_IRT, FEED_BDFM, FEED_NQRW, FEED_ACE]  # index 0..3
+FEED_ALERTS = "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/camsys%2Fsubway-alerts"
+FEED_ALERTS_LIRR = "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/camsys%2Flirr-alerts"
+FEED_ALERTS_MNR = "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/camsys%2Fmnr-alerts"
+
+FEED_URLS = [FEED_IRT, FEED_BDFM, FEED_NQRW, FEED_ACE, FEED_LIRR, FEED_MNR]
 NUM_FEEDS = len(FEED_URLS)
+# Stop-id prefix per feed: "" = subway (bare numeric), "L" = LIRR, "M" = MNR.
+FEED_AGENCY = ["", "", "", "", "L", "M"]
+# Alert feed per agency prefix.
+FEED_ALERTS_BY_AGENCY = {"": FEED_ALERTS, "L": FEED_ALERTS_LIRR, "M": FEED_ALERTS_MNR}
 
 # ---- Weather (Open-Meteo, no API key; Grand Central-42 St) ----
 WEATHER_URL = (

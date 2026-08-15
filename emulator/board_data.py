@@ -57,7 +57,8 @@ class BoardState:
         # route can appear at more than one stop. Kept across failed fetches.
         self.arrivals = {i: RouteArrivals(r[0], r[1]) for i, r in enumerate(c.ROUTES)}
         # Alerts are per route name (a service alert isn't stop-specific).
-        self.alerts = {r[0]: RouteAlert(r[0]) for r in c.ROUTES}
+        # Keyed by ROUTE INDEX, not route id: ids repeat across agencies.
+        self.alerts = {i: RouteAlert(r[0]) for i, r in enumerate(c.ROUTES)}
         self.weather = weather_parse({}, 0)  # invalid until first good fetch
         self.last_feed_ok = [0.0] * c.NUM_FEEDS  # monotonic secs, 0 = never
         self.last_weather = 0.0
@@ -125,7 +126,7 @@ class BoardState:
             except Exception as e:
                 self.log("feed %d fetch failed: %s" % (f, e))
                 continue
-            n_entities = gtfs_rt_parse(raw, list(fresh.values()))
+            n_entities = gtfs_rt_parse(raw, list(fresh.values()), int(time.time()))
             if n_entities < 0:
                 self.log("feed %d parse failed" % f)
                 continue
@@ -144,18 +145,31 @@ class BoardState:
 
         if not with_alerts:
             return
-        fresh_alerts = {r[0]: RouteAlert(r[0]) for r in self.cfg.ROUTES}
-        try:
-            raw = _fetch(self.cfg.FEED_ALERTS)
-        except Exception as e:
-            self.log("alerts fetch failed: %s" % e)
-            return
-        if gtfs_alerts_parse(raw, int(time.time()), list(fresh_alerts.values())):
-            self.alerts = fresh_alerts
-            active = [a.route for a in fresh_alerts.values() if a.text]
-            self.log("alerts ok (%s)" % (", ".join(active) or "none active"))
-        else:
-            self.log("alerts parse failed")
+        # One alert feed per agency, fetched only for agencies this board uses.
+        # They have to stay separate: route ids repeat across agencies, so
+        # parsing LIRR's Babylon Branch ("1") against the subway feed would hand
+        # it the 1 train's alerts. Keyed by ROUTE INDEX for the same reason.
+        agencies = {}
+        for i, r in enumerate(self.cfg.ROUTES):
+            agencies.setdefault(self.cfg.FEED_AGENCY[r[2]], []).append(i)
+
+        for prefix, idxs in agencies.items():
+            url = self.cfg.FEED_ALERTS_BY_AGENCY.get(prefix)
+            if not url:
+                continue
+            fresh = {i: RouteAlert(self.cfg.ROUTES[i][0]) for i in idxs}
+            try:
+                raw = _fetch(url)
+            except Exception as e:
+                self.log("alerts fetch failed (%s): %s" % (prefix or "subway", e))
+                continue          # keep this agency's previous text
+            if not gtfs_alerts_parse(raw, int(time.time()), list(fresh.values())):
+                self.log("alerts parse failed (%s)" % (prefix or "subway"))
+                continue
+            self.alerts.update(fresh)
+            active = [a.route for a in fresh.values() if a.text]
+            self.log("alerts ok (%s: %s)" % (prefix or "subway",
+                                             ", ".join(active) or "none active"))
 
     # ---- rendering ----
 

@@ -251,6 +251,26 @@ async function handleCatalog(env, table, q) {
   return json({ results: results || [] });
 }
 
+// Commuter-rail stations for one agency, optionally narrowed to a branch.
+// `route` filters on the space-separated routes column, padded so branch "1"
+// can't match "10" -- the reason LIRR's Port Jefferson kept turning up under
+// Babylon.
+async function handleRailCatalog(env, agency, q, route) {
+  const a = String(agency || "").toUpperCase();
+  if (a !== "L" && a !== "M") return json({ error: "unknown agency" }, 400);
+  const like = `%${(q || "").replace(/[%_]/g, "")}%`;
+  let sql = `SELECT stop_id, name, lat, lon, routes FROM rail_stops
+              WHERE agency = ? AND name LIKE ?`;
+  const binds = [a, like];
+  if (route) {
+    sql += " AND (' ' || routes || ' ') LIKE ?";
+    binds.push(`% ${String(route).replace(/[%_]/g, "")} %`);
+  }
+  sql += " ORDER BY name LIMIT 50";
+  const { results } = await env.DB.prepare(sql).bind(...binds).all();
+  return json({ results: results || [] });
+}
+
 // All stops in a station complex, so the editor can map each line to its stop id
 // (e.g. complex 610 -> {631:"4 5 6", 723:"7", 901:"S"}).
 async function handleComplex(env, complexId) {
@@ -292,6 +312,10 @@ export default {
         return handleCatalog(env, "citibike", url.searchParams.get("q"));
       if (pathname === "/api/catalog/complex" && request.method === "GET")
         return handleComplex(env, url.searchParams.get("id"));
+      if (pathname === "/api/catalog/rail" && request.method === "GET")
+        return handleRailCatalog(env, url.searchParams.get("agency"),
+                                 url.searchParams.get("q"),
+                                 url.searchParams.get("route"));
       if (pathname === "/api/geocode" && request.method === "GET")
         return handleGeocode(env, url.searchParams.get("q"));
       if (pathname === "/api/admin/devices" && request.method === "GET")

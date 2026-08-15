@@ -131,12 +131,22 @@ bool parseStopTimeUpdate(Cursor c, StopTime& st) {
   return true;
 }
 
-bool parseTripUpdate(Cursor c, RouteArrivals* routes, size_t nRoutes) {
+bool parseTripUpdate(Cursor c, RouteArrivals* routes, size_t nRoutes,
+                     uint32_t minTime) {
   char routeId[8] = "";
   // Stop-time updates can precede the trip descriptor in theory, so collect
-  // matches for either stop and assign once the route is known.
+  // candidates and assign once the route is known. Only stops that some
+  // configured route actually watches are buffered -- a trip can call at fifty
+  // stations, and keeping just the interesting ones bounds this array by the
+  // config rather than by the length of the trip.
   StopTime pending[MAX_ARRIVALS * 2];
   size_t nPending = 0;
+  // The terminal is tracked separately, on EVERY stop, because it must be the
+  // genuine last stop of the trip. Reading it out of `pending` instead would
+  // silently return the last *buffered* stop, which for a long trip is some
+  // arbitrary station in the middle -- and that is both the destination shown
+  // on screen and, for rail, the thing direction is inferred from.
+  char terminal[16] = "";
 
   uint64_t tag;
   while (c.p < c.end) {
@@ -157,9 +167,16 @@ bool parseTripUpdate(Cursor c, RouteArrivals* routes, size_t nRoutes) {
       Cursor su;
       if (!enterMessage(c, su)) return false;
       StopTime st;
-      if (parseStopTimeUpdate(su, st) && st.stopId[0] && nPending < sizeof(pending) / sizeof(pending[0])) {
-        pending[nPending++] = st;
+      if (!parseStopTimeUpdate(su, st) || !st.stopId[0]) continue;
+      memcpy(terminal, st.stopId, sizeof(terminal));
+      bool watched = false;
+      for (size_t r = 0; r < nRoutes && !watched; r++) {
+        const char* cfgStop = routes[r].stopId;
+        if (agencyPrefix(cfgStop)) cfgStop++;
+        if (strcmp(st.stopId, cfgStop) == 0) watched = true;
       }
+      if (watched && nPending < sizeof(pending) / sizeof(pending[0]))
+        pending[nPending++] = st;
     } else if (!skipField(c, wire)) {
       return false;
     }
@@ -167,14 +184,32 @@ bool parseTripUpdate(Cursor c, RouteArrivals* routes, size_t nRoutes) {
 
   if (!routeId[0]) return true;
   // Stop-time updates run in stop order, so the last one is the terminal --
-  // where this train is going.
-  const char* terminal = nPending ? pending[nPending - 1].stopId : "";
+  // where this train is going. This is also what gives commuter rail a
+  // direction: Metro-North's feed omits direction_id entirely, so the only
+  // signal for which way a train is headed is where it ends up.
   for (size_t r = 0; r < nRoutes; r++) {
     if (strcmp(routes[r].route, routeId) != 0) continue;
+    // A configured rail stop is namespaced ("L237"); the feed carries it bare
+    // ("237"). Match against the bare id, then re-apply the prefix to the
+    // terminal so it resolves in the shared stop table. See config.h.
+    const char* cfgStop = routes[r].stopId;
+    char prefix = agencyPrefix(cfgStop);
+    if (prefix) cfgStop++;
+    // A train that ENDS at our stop can't be boarded there, so it isn't a
+    // departure. Terminals make this obvious -- at Grand Central, half of
+    // Metro-North's trips terminate at Grand Central -- but it's equally true
+    // of a subway train ending its run at your station.
+    if (terminal[0] && strcmp(terminal, cfgStop) == 0) continue;
     for (size_t i = 0; i < nPending; i++) {
-      if (strcmp(pending[i].stopId, routes[r].stopId) != 0) continue;
+      if (strcmp(pending[i].stopId, cfgStop) != 0) continue;
       uint32_t t = pending[i].arrival ? pending[i].arrival : pending[i].departure;
-      if (t) insertSorted(routes[r], t, terminal);
+      if (!t || t < minTime) continue;
+      char dest[8];
+      size_t di = 0;
+      if (prefix) dest[di++] = prefix;
+      for (const char* s = terminal; *s && di < sizeof(dest) - 1; s++) dest[di++] = *s;
+      dest[di] = '\0';
+      insertSorted(routes[r], t, dest);
     }
   }
   return true;
@@ -305,8 +340,10 @@ bool gtfsAlertsParse(const uint8_t* buf, size_t len, uint32_t now, RouteAlert* a
 }
 
 bool gtfsRtParse(const uint8_t* buf, size_t len, RouteArrivals* routes,
-                 size_t nRoutes, size_t* entityCount) {
+                 size_t nRoutes, size_t* entityCount, uint32_t now) {
   if (entityCount) *entityCount = 0;
+  // 60s of slack so a train arriving right now isn't dropped mid-render.
+  const uint32_t minTime = now ? now - 60 : 0;
   Cursor c{buf, buf + len};
   uint64_t tag;
   while (c.p < c.end) {
@@ -322,7 +359,7 @@ bool gtfsRtParse(const uint8_t* buf, size_t len, RouteArrivals* routes,
         if ((t2 >> 3) == 3 && (t2 & 7) == 2) {     // trip_update
           Cursor tu;
           if (!enterMessage(entity, tu)) return false;
-          if (!parseTripUpdate(tu, routes, nRoutes)) return false;
+          if (!parseTripUpdate(tu, routes, nRoutes, minTime)) return false;
         } else if (!skipField(entity, t2 & 7)) {
           return false;
         }

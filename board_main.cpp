@@ -38,7 +38,10 @@
 #define FEED_BUF_SIZE (1536 * 1024)  // Citi Bike station_status is ~960 KB (PSRAM)
 #define NYC_TZ "EST5EDT,M3.2.0/2,M11.1.0/2"
 
-static const char* FEED_URLS[NUM_FEEDS] = { FEED_IRT, FEED_BDFM, FEED_NQRW, FEED_ACE };
+static const char* FEED_URLS[NUM_FEEDS] = { FEED_IRT, FEED_BDFM, FEED_NQRW, FEED_ACE,
+                                            FEED_LIRR, FEED_MNR };
+// Stop-id namespace per feed (see config.h): 0 = subway, 'L'/'M' = rail.
+static const char FEED_AGENCY[NUM_FEEDS] = FEED_AGENCY_INIT;
 
 uint8_t ImageBW[27200];          // (800/8) x 272 framebuffer
 static uint8_t* feedBuf = nullptr;
@@ -217,7 +220,7 @@ static void updateArrivals(bool withAlerts) {
 
     size_t len = fetchFeed(FEED_URLS[f]);
     size_t nEntities = 0;
-    if (!len || !gtfsRtParse(feedBuf, len, fresh, nFresh, &nEntities)) {
+    if (!len || !gtfsRtParse(feedBuf, len, fresh, nFresh, &nEntities, (uint32_t)time(nullptr))) {
       Serial.printf("feed %d failed (len=%u)\n", f, (unsigned)len);
       continue;                // keep previous data for these routes
     }
@@ -240,16 +243,33 @@ static void updateArrivals(bool withAlerts) {
   // so it's only fetched every few minutes; kept from the last good fetch
   // on failure, same as arrivals.
   if (!withAlerts) return;
-  RouteAlert fresh[MAX_ROUTES];
-  for (int r = 0; r < NUM_ROUTES; r++) {
-    fresh[r].route = ROUTES[r].route;
-    fresh[r].text[0] = '\0';
-  }
-  size_t len = fetchFeed(FEED_ALERTS);
-  if (len && gtfsAlertsParse(feedBuf, len, (uint32_t)time(nullptr), fresh, NUM_ROUTES)) {
-    memcpy(routeAlerts, fresh, sizeof(routeAlerts));
-  } else {
-    Serial.printf("alerts feed failed (len=%u)\n", (unsigned)len);
+  // One alert feed per agency, fetched only for agencies this board actually
+  // uses. They have to stay separate: route ids repeat across agencies, so
+  // parsing LIRR's Babylon Branch ("1") against the subway feed would hand it
+  // the 1 train's alerts. Each agency is applied on its own so a failure in one
+  // keeps the others' last-good text.
+  static const char kCodes[3] = {0, 'L', 'M'};
+  static const char* const kFeeds[3] = {FEED_ALERTS, FEED_ALERTS_LIRR, FEED_ALERTS_MNR};
+
+  for (int a = 0; a < 3; a++) {
+    RouteAlert sub[MAX_ROUTES];
+    uint8_t idx[MAX_ROUTES];
+    size_t n = 0;
+    for (int r = 0; r < NUM_ROUTES; r++) {
+      if (FEED_AGENCY[ROUTES[r].feedIndex] != kCodes[a]) continue;
+      sub[n].route = ROUTES[r].route;
+      sub[n].text[0] = '\0';
+      idx[n] = (uint8_t)r;
+      n++;
+    }
+    if (!n) continue;
+    size_t len = fetchFeed(kFeeds[a]);
+    if (!len || !gtfsAlertsParse(feedBuf, len, (uint32_t)time(nullptr), sub, n)) {
+      Serial.printf("alerts feed %d failed (len=%u)\n", a, (unsigned)len);
+      continue;               // keep this agency's previous text
+    }
+    for (size_t i = 0; i < n; i++)
+      snprintf(routeAlerts[idx[i]].text, sizeof(routeAlerts[0].text), "%s", sub[i].text);
   }
 }
 

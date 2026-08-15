@@ -4,6 +4,8 @@
   stops.sql            - subway parent stations (id, name, lat, lon) from the
                          MTA static GTFS (emulator/stops_cache.csv)
   citibike.sql         - Citi Bike stations (id, name, lat, lon) from GBFS
+  rail.sql             - LIRR + Metro-North stations, with the branches serving
+                         each, from each agency's static GTFS
 
 Run from backend/seed/:  python3 gen_catalog.py
 Then load them:          wrangler d1 execute subwayboard --file=seed/stops.sql
@@ -12,10 +14,12 @@ Then load them:          wrangler d1 execute subwayboard --file=seed/stops.sql
 """
 
 import csv
+import io
 import json
 import os
 import ssl
 import urllib.request
+import zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 # MTA "Subway Stations" dataset: one row per GTFS stop, with the daytime routes
@@ -67,6 +71,52 @@ def gen_citibike():
     print(f"citibike.sql: {len(rows)} stations")
 
 
+def gen_rail():
+    """Commuter-rail stations, with the branches that actually serve each one.
+
+    Which branch calls at which station isn't in stops.txt, so it's derived the
+    only way the static GTFS offers: trips.txt maps trip -> route, stop_times.txt
+    maps trip -> stops, and joining them gives route -> stations. Stop ids are
+    written with their agency prefix ("L237", "M1") because the three agencies
+    reuse each other's numbers -- see emulator/stops.py.
+    """
+    sources = [("L", "http://web.mta.info/developers/data/lirr/google_transit.zip"),
+               ("M", "http://web.mta.info/developers/data/mnr/google_transit.zip")]
+    rows = []
+    for prefix, url in sources:
+        req = urllib.request.Request(url, headers={"User-Agent": "subwayboard-seed/1.0"})
+        raw = urllib.request.urlopen(req, timeout=120, context=_SSL).read()
+        z = zipfile.ZipFile(io.BytesIO(raw))
+
+        def table(name):
+            return csv.DictReader(io.StringIO(z.read(name).decode("utf-8-sig")))
+
+        trip_route = {t["trip_id"]: t["route_id"] for t in table("trips.txt")}
+        stop_routes = {}
+        for st in table("stop_times.txt"):
+            r = trip_route.get(st["trip_id"])
+            if r:
+                stop_routes.setdefault(st["stop_id"], set()).add(r)
+
+        n = 0
+        for s in table("stops.txt"):
+            sid = s["stop_id"]
+            routes = sorted(stop_routes.get(sid, ()), key=lambda x: int(x) if x.isdigit() else 99)
+            if not routes:
+                continue          # yards and other non-passenger stops
+            rows.append([q(prefix + sid), q(prefix), q(s["stop_name"]),
+                         s.get("stop_lat") or "0", s.get("stop_lon") or "0",
+                         q(" ".join(routes))])
+            n += 1
+        print(f"  {prefix}: {n} stations")
+
+    with open(os.path.join(HERE, "rail.sql"), "w", encoding="utf-8") as out:
+        batched_insert("rail_stops",
+                       ["stop_id", "agency", "name", "lat", "lon", "routes"], rows, out)
+    print(f"rail.sql: {len(rows)} stations")
+
+
 if __name__ == "__main__":
     gen_stops()
     gen_citibike()
+    gen_rail()

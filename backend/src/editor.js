@@ -293,8 +293,36 @@ export const EDITOR_HTML = `<!doctype html>
   .rb.lt{color:#0C0F16}
   .rb.sm{width:17px;height:17px;font-size:9.5px}
 
+  /* Commuter-rail branches are named, not lettered, so they get a bar rather
+     than a circle -- the same distinction the panel draws, and the same one the
+     MTA makes on its own signage. */
+  .rr{
+    display:inline-grid;place-items:center;height:18px;padding:0 6px;border-radius:2px;
+    font-size:9px;font-weight:700;color:#fff;letter-spacing:.04em;white-space:nowrap;
+  }
+
   /* trains */
-  .train{display:flex;align-items:center;gap:10px;margin-bottom:9px}
+  .train{display:flex;align-items:center;gap:10px;margin-bottom:9px;flex-wrap:wrap}
+  /* A rail row needs an origin as well as a destination -- your Metro-North
+     station is rarely the subway stop outside your door -- so it wraps onto a
+     second line rather than squeezing four controls into one. */
+  .train.rail .sel{width:126px}
+  /* The bar already names the branch, so the select's own text would only
+     repeat it -- and at this width it repeats it truncated ("Hud"). Hide the
+     text and let the bar be the label, exactly as the bullet is for a subway
+     line. The accessible name still comes from the option and the aria-label. */
+  .train.rail .sel select{padding-left:12px;color:transparent}
+  .train.rail .sel .rr{position:absolute;left:6px;top:50%;transform:translateY(-50%);
+    pointer-events:none;max-width:96px;overflow:hidden}
+  /* Indented to line up under the destination, so it reads as part of the row
+     above rather than a field of its own. */
+  .train .from{flex:1 1 100%;min-width:0;display:flex;align-items:center;gap:8px;
+    margin:-3px 0 2px;padding-left:136px}
+  .train .from label{
+    flex:none;font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;
+    color:var(--steel);font-weight:700;
+  }
+  .train .from .ac{flex:1;min-width:0}
   /* 32px of left padding clears the bullet and the caret takes another 34px,
      which left the line letter about 8px to sit in. Wider, plus a tighter
      caret gutter, so the extra room actually goes to the content. */
@@ -358,6 +386,8 @@ export const EDITOR_HTML = `<!doctype html>
     .unit{padding:4px 9px}
     .plate-head{flex-direction:column;gap:2px}
     .plate-head .d{font-size:10.5px}
+    /* No room to indent the origin under the destination on a phone. */
+    .train .from{padding-left:0}
     .flip button{padding:7px 10px;font-size:10px;letter-spacing:.07em;white-space:nowrap}
     .flip .rev{display:none}
     /* A 2.9:1 panel shrunk to a phone's width is unreadable, so let it keep a
@@ -536,6 +566,44 @@ var LINE_COLORS = {
 };
 var LIGHT_LINES = {"N":1,"Q":1,"R":1,"W":1};   // yellow needs dark type
 var LINES = ["1","2","3","4","5","6","7","A","C","E","B","D","F","M","N","Q","R","W","G","J","Z","L","S"];
+
+// Commuter-rail branches. "s" is exactly what the board prints on its bar, so
+// what you pick here is what you'll read across the room; "c" is each agency's
+// official route_color from its static GTFS. Kept in step with RAIL_BRANCHES
+// in config.js.
+var RAIL = {
+  L: { name:"LIRR", branches:[
+    {r:"1",  s:"BABYLON",    n:"Babylon",         c:"#00985F"},
+    {r:"2",  s:"HEMPSTEAD",  n:"Hempstead",       c:"#CE8E00"},
+    {r:"3",  s:"OYSTER BAY", n:"Oyster Bay",      c:"#00AF3F"},
+    {r:"4",  s:"RONKONKOMA", n:"Ronkonkoma",      c:"#A626AA"},
+    {r:"5",  s:"MONTAUK",    n:"Montauk",         c:"#00B2A9"},
+    {r:"6",  s:"LONG BEACH", n:"Long Beach",      c:"#FF6319"},
+    {r:"7",  s:"FAR ROCK",   n:"Far Rockaway",    c:"#6E3219"},
+    {r:"8",  s:"W HEMPSTD",  n:"West Hempstead",  c:"#00A1DE"},
+    {r:"9",  s:"PORT WASH",  n:"Port Washington", c:"#C60C30"},
+    {r:"10", s:"PORT JEFF",  n:"Port Jefferson",  c:"#006EC7"},
+    {r:"11", s:"BELMONT",    n:"Belmont Park",    c:"#60269E"},
+    {r:"12", s:"CITY ZONE",  n:"City Terminal",   c:"#4D5357"},
+    {r:"13", s:"GREENPORT",  n:"Greenport",       c:"#A626AA"}
+  ]},
+  M: { name:"Metro-North", branches:[
+    {r:"1", s:"HUDSON",     n:"Hudson",     c:"#009B3A"},
+    {r:"2", s:"HARLEM",     n:"Harlem",     c:"#0039A6"},
+    {r:"3", s:"NEW HAVEN",  n:"New Haven",  c:"#EE0034"},
+    {r:"4", s:"NEW CANAAN", n:"New Canaan", c:"#EE0034"},
+    {r:"5", s:"DANBURY",    n:"Danbury",    c:"#EE0034"},
+    {r:"6", s:"WATERBURY",  n:"Waterbury",  c:"#EE0034"}
+  ]}
+};
+
+function branchOf(col){
+  var a = RAIL[col && col.agency];
+  if (!a) return null;
+  for (var i = 0; i < a.branches.length; i++)
+    if (a.branches[i].r === String(col.line)) return a.branches[i];
+  return null;
+}
 
 var STYLES = [
   { id:"R", name:"Refined", ds:"Five columns, framed. The classic board.",
@@ -723,20 +791,65 @@ function renderStyles(){
   });
 }
 
+// A rail station row in an autocomplete list, labelled with its branches.
+function railRow(s){
+  var a = RAIL[s.stop_id.charAt(0)];
+  var rs = String(s.routes || "").trim().split(/\s+/).filter(Boolean);
+  var b = rs.slice(0, 4).map(function(r){
+    for (var i = 0; a && i < a.branches.length; i++)
+      if (a.branches[i].r === r)
+        return '<span class="rr" style="background:' + a.branches[i].c + '">' +
+               esc(a.branches[i].s) + '</span>';
+    return "";
+  }).join(" ");
+  return '<span class="nm">' + esc(s.name) + '</span><span class="lines">' + b + '</span>';
+}
+
 function renderTrains(){
   var box = $("trains"); box.innerHTML = "";
   edit.columns.forEach(function(col, i){
-    var row = document.createElement("div"); row.className = "train";
+    var br = branchOf(col);
+    var row = document.createElement("div");
+    row.className = "train" + (br ? " rail" : "");
 
+    // One control picks the service, subway and commuter rail together --
+    // they're alternatives for the same slot on the board, not separate ideas.
     var sel = document.createElement("div"); sel.className = "sel";
     var s = document.createElement("select"); s.className = "inp";
-    s.setAttribute("aria-label", "Train line");
+    s.setAttribute("aria-label", "Line or branch");
+    var g = document.createElement("optgroup"); g.label = "Subway";
     LINES.forEach(function(l){
       var o = document.createElement("option"); o.value = l; o.textContent = l;
-      if (l === col.line) o.selected = true; s.appendChild(o);
+      if (!col.agency && l === col.line) o.selected = true; g.appendChild(o);
     });
-    s.onchange = function(){ col.line = s.value; renderTrains(); };
-    sel.innerHTML = bulletHTML(col.line || "6");
+    s.appendChild(g);
+    ["L", "M"].forEach(function(ag){
+      var og = document.createElement("optgroup"); og.label = RAIL[ag].name;
+      RAIL[ag].branches.forEach(function(b){
+        var o = document.createElement("option");
+        o.value = ag + ":" + b.r; o.textContent = b.n;
+        if (col.agency === ag && String(col.line) === b.r) o.selected = true;
+        og.appendChild(o);
+      });
+      s.appendChild(og);
+    });
+    s.onchange = function(){
+      var v = s.value;
+      if (v.indexOf(":") > 0){
+        var p = v.split(":");
+        // Switching agency invalidates the stations -- they're from different
+        // catalogs entirely -- so clear rather than carry a stale pick over.
+        if (col.agency !== p[0]){ col.origin = null; col.dest = null; }
+        col.agency = p[0]; col.line = p[1];
+      } else {
+        if (col.agency){ col.origin = null; col.dest = null; }
+        col.agency = ""; col.line = v;
+      }
+      renderTrains(); renderStripe();
+    };
+    sel.innerHTML = br
+      ? '<span class="rr" style="background:' + br.c + '">' + esc(br.s) + '</span>'
+      : bulletHTML(col.line || "6");
     sel.appendChild(s);
 
     var wrap = document.createElement("div"); wrap.className = "dest ac";
@@ -746,10 +859,19 @@ function renderTrains(){
     inp.value = (col.dest && col.dest.name) || "";
     var lst = document.createElement("div"); lst.className = "ac-list hidden";
     wrap.appendChild(inp); wrap.appendChild(lst);
-    autocomplete(inp, lst, "/api/catalog/stops?q=", stationRow, function(st){
-      col.dest = { name: st.name, lat: st.lat, lon: st.lon };
-      inp.value = st.name;
-    });
+    if (br){
+      autocomplete(inp, lst,
+        "/api/catalog/rail?agency=" + col.agency + "&route=" + col.line + "&q=",
+        railRow, function(st){
+          col.dest = { stop_id: st.stop_id, name: st.name, lat: st.lat, lon: st.lon };
+          inp.value = st.name;
+        });
+    } else {
+      autocomplete(inp, lst, "/api/catalog/stops?q=", stationRow, function(st){
+        col.dest = { name: st.name, lat: st.lat, lon: st.lon };
+        inp.value = st.name;
+      });
+    }
 
     var x = document.createElement("button");
     x.type = "button"; x.className = "x"; x.innerHTML = "&times;";
@@ -757,6 +879,33 @@ function renderTrains(){
     x.onclick = function(){ edit.columns.splice(i, 1); renderTrains(); };
 
     row.appendChild(sel); row.appendChild(wrap); row.appendChild(x);
+
+    // Rail needs its own origin: a Metro-North station is rarely the subway
+    // stop outside your door, and the direction of travel is worked out from
+    // origin -> destination.
+    if (br){
+      var from = document.createElement("div"); from.className = "from";
+      var lab = document.createElement("label"); lab.textContent = "From";
+      var fw = document.createElement("div"); fw.className = "ac";
+      var fi = document.createElement("input"); fi.className = "inp";
+      fi.placeholder = "Your station on this branch…";
+      fi.setAttribute("aria-label", "Origin station");
+      fi.value = (col.origin && col.origin.name) || "";
+      var fl = document.createElement("div"); fl.className = "ac-list hidden";
+      fw.appendChild(fi); fw.appendChild(fl);
+      autocomplete(fi, fl,
+        "/api/catalog/rail?agency=" + col.agency + "&route=" + col.line + "&q=",
+        railRow, function(st){
+          // Strip the agency prefix: the resolver re-applies it, and the raw
+          // stop id is what the feed carries.
+          col.origin = { stop_id: st.stop_id.slice(1), name: st.name,
+                         lat: st.lat, lon: st.lon };
+          fi.value = st.name;
+        });
+      from.appendChild(lab); from.appendChild(fw);
+      row.appendChild(from);
+    }
+
     box.appendChild(row);
   });
   $("addTrain").disabled = edit.columns.length >= 4;
@@ -769,6 +918,8 @@ function renderStripe(){
   var cols = (edit && edit.columns) || [];
   if (!cols.length){ el.innerHTML = ""; return; }
   el.innerHTML = cols.map(function(c){
+    var br = branchOf(c);
+    if (br) return '<i style="background:' + br.c + '"></i>';
     var L = String(c.line || "").toUpperCase();
     return '<i style="background:' + (LINE_COLORS[L] || "#0C0F16") + '"></i>';
   }).join("");

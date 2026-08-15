@@ -276,7 +276,12 @@ def _prepare_columns(arrivals, alerts, now, stop_names, stop_coords, cfg):
     the data shown is always computed here, once.
     """
     cols, blurbs = [], []
-    for label, fallback, route_idxs, dest_filter in cfg.COLUMNS:
+    for col_cfg in cfg.COLUMNS:
+        label, fallback, route_idxs, dest_filter = col_cfg[:4]
+        # Optional 5th element: a compass direction that arrivals must be
+        # heading, for commuter rail (whose stop ids, unlike the subway's, say
+        # nothing about direction). Absent on the static subway config.
+        dir_filter = col_cfg[4] if len(col_cfg) > 4 else ""
         merged = []
         for ri in route_idxs:
             route = cfg.ROUTES[ri][0]
@@ -289,6 +294,9 @@ def _prepare_columns(arrivals, alerts, now, stop_names, stop_coords, cfg):
                     continue
                 dname = stops.dest_name(dest, stop_names)
                 if dest_filter and dname not in dest_filter:
+                    continue
+                if dir_filter and stops.direction4(
+                        cfg.ROUTES[ri][1], dest, stop_coords) != dir_filter:
                     continue
                 merged.append((m, route, dname, dest))
         merged.sort(key=lambda mr: mr[0])   # stable
@@ -304,7 +312,7 @@ def _prepare_columns(arrivals, alerts, now, stop_names, stop_coords, cfg):
         if n == 0:
             blurb = None
             for ri in route_idxs:
-                a = alerts.get(cfg.ROUTES[ri][0])
+                a = alerts.get(ri)
                 if a and a.text:
                     blurb = a.text
                     break
@@ -313,12 +321,20 @@ def _prepare_columns(arrivals, alerts, now, stop_names, stop_coords, cfg):
             if blurb not in blurbs:
                 blurbs.append(blurb)
 
+        # Commuter-rail columns are labelled with a branch name ("Hudson",
+        # "Port Washington") rather than a one-character subway bullet, so they
+        # get a bar instead of a circle. Taken from the feed the column's first
+        # route reads, which is what defines its agency.
+        feed = cfg.ROUTES[route_idxs[0]][2] if route_idxs else 0
+        rail = bool(cfg.FEED_AGENCY[feed]) if feed < len(cfg.FEED_AGENCY) else False
+
         cols.append({
             "label": label,
             "station": _three_words(station),
             "direction": direction,
             "arrivals": merged,
             "tag": len(route_idxs) > 1,   # merged column -> tag each time
+            "rail": rail,
         })
     return cols, blurbs
 
@@ -340,6 +356,81 @@ def _fit(font, text, max_w):
     return text
 
 
+def _fit_words(font, text, max_w):
+    """Fit by dropping whole words before resorting to cutting letters.
+
+    "CROTON-HARMON" shortened to "CROTON" still names a place; chopped to
+    "CROTON-HAR" doesn't. Station names are head-weighted, so the leading word
+    is the one worth keeping.
+    """
+    if font.text_w(text) <= max_w:
+        return text
+    parts = text.replace("-", " - ").split()
+    while len(parts) > 1:
+        parts.pop()
+        cand = " ".join(parts).replace(" - ", "-").rstrip("- ")
+        if font.text_w(cand) <= max_w:
+            return cand
+    return _fit(font, text, max_w)
+
+
+# ---- route bullets -------------------------------------------------------
+# The subway's bullet is a letter or digit in a circle. Commuter-rail branches
+# are named, not lettered ("Hudson", "Port Washington"), so they get a filled
+# BAR sized to the text instead -- which is also how the MTA signs them. The
+# bar is squared rather than rounded because the firmware's EPD primitives have
+# no rounded-rect and the two halves must match dot for dot.
+
+BULLET_PAD_X = 7        # bar padding either side of the text
+BULLET_PAD_Y = 4        # bar padding above and below
+
+
+def _bar_label(col):
+    """Bar text for a rail column -- uppercased, the way the MTA signs a branch.
+
+    The backend already supplies a short form ("PORT WASH", not "Port
+    Washington Branch"); this only normalises the case.
+    """
+    return col["label"].upper()
+
+
+def _uniform_bullet_font(cols, fonts, max_w):
+    """Largest font in `fonts` (largest-first) whose bar fits every rail label.
+
+    Chosen once across all columns so branch bars don't come out at a jumble of
+    sizes -- the same reasoning as _uniform_station_font.
+    """
+    labels = [_bar_label(c) for c in cols if c.get("rail")]
+    if not labels:
+        return fonts[-1]
+    for f in fonts:
+        if all(f.text_w(l) + BULLET_PAD_X * 2 <= max_w for l in labels):
+            return f
+    return fonts[-1]
+
+
+def _bullet_w(col, r, circle_font, bar_font, max_w):
+    """Full width of a column's bullet, so callers can place it before drawing."""
+    if not col.get("rail"):
+        return r * 2
+    text = _fit(bar_font, _bar_label(col), max_w - BULLET_PAD_X * 2)
+    return bar_font.text_w(text) + BULLET_PAD_X * 2
+
+
+def _bullet(fb, draw, cx, cy, col, r, circle_font, bar_font, max_w):
+    """Draw a column's bullet centred on (cx, cy)."""
+    if not col.get("rail"):
+        draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=BLACK)
+        circle_font.centered(fb, cx, cy - circle_font.height // 2,
+                             col["label"], WHITE)
+        return
+    text = _fit(bar_font, _bar_label(col), max_w - BULLET_PAD_X * 2)
+    w = bar_font.text_w(text) + BULLET_PAD_X * 2
+    h = bar_font.height + BULLET_PAD_Y * 2
+    draw.rectangle([cx - w // 2, cy - h // 2, cx + w // 2, cy + h // 2], fill=BLACK)
+    bar_font.centered(fb, cx, cy - bar_font.height // 2, text, WHITE)
+
+
 # ---------------------------------------------------------------- layout: R
 
 def _render_refined(fb, draw, cols, blurbs, weather_info, ebikes, rotation,
@@ -352,19 +443,26 @@ def _render_refined(fb, draw, cols, blurbs, weather_info, ebikes, rotation,
     draw.rectangle([2, 2, SCREEN_W - 3, SCREEN_H - 3], outline=BLACK, width=3)
     _draw_weather(fb, col_w // 2, weather_info, ebikes)
 
+    # The bullet stays centred over its destination, and the arrow hangs off its
+    # left -- so the arrow's width has to be reserved on BOTH sides or a wide
+    # branch bar pushes the arrow past the column edge.
+    bullet_max_w = col_w - 2 * (ARROWS["N"].w + 6) - 8
+    bar_font = _uniform_bullet_font(cols, (helv19b, helv15b, helv13b, helv12b),
+                                    bullet_max_w)
+
     station_labels = []
     for i, c in enumerate(cols):
         cx = (i + 1) * col_w + col_w // 2
 
-        draw.ellipse([cx - BULLET_R, BULLET_CY - BULLET_R,
-                      cx + BULLET_R, BULLET_CY + BULLET_R], fill=BLACK)
-        helv28b.centered(fb, cx, BULLET_CY - helv28b.height // 2, c["label"], WHITE)
+        _bullet(fb, draw, cx, BULLET_CY, c, BULLET_R, helv28b, bar_font,
+                bullet_max_w)
 
         station_labels.append((cx, c["station"]))
 
         arrow = ARROWS.get(c["direction"])
         if arrow:
-            arrow.draw(fb, cx - BULLET_R - 6 - arrow.w,
+            half = _bullet_w(c, BULLET_R, helv28b, bar_font, bullet_max_w) // 2
+            arrow.draw(fb, cx - half - 6 - arrow.w,
                        BULLET_CY - arrow.h // 2, BLACK)
 
         merged = c["arrivals"]
@@ -419,6 +517,12 @@ def _render_hero(fb, draw, cols, blurbs, weather_info, ebikes, rotation,
     f_temp, f_small, f_clock, f_date = helv32b, helv13b, helv19b, helv12b
     f_hero, f_unit, f_also, f_dest, f_tick = helv74b, helv13b, helv15b, helv12b, helv14
 
+    # A rail bar shares the header row with the destination, so cap it at about
+    # half the column and let the branch name truncate rather than crowd out
+    # where the train is going.
+    hero_bullet_max_w = col_w // 2
+    bar_font = _uniform_bullet_font(cols, (helv13b, helv12b), hero_bullet_max_w)
+
     # Weather strip across the top.
     if weather_info.valid:
         f_temp.draw(fb, 14, 6, "%d%s" % (weather_info.feels, DEG), BLACK)
@@ -456,13 +560,15 @@ def _render_hero(fb, draw, cols, blurbs, weather_info, ebikes, rotation,
         aw = arrow.w if arrow else 0
         if arrow:
             arrow.draw(fb, ax, hy - arrow.h // 2, BLACK)
-        bx = ax + aw + (7 if aw else 0) + r
-        draw.ellipse([bx - r, hy - r, bx + r, hy + r], fill=BLACK)
-        lab = helv12b if len(c["label"]) > 2 else helv15b
-        lab.centered(fb, bx, hy - lab.height // 2, c["label"], WHITE)
-        dx = bx + r + 6
+        # Subway bullets are a fixed circle; a rail bar takes whatever width its
+        # branch name needs, so measure first and place the destination after it.
+        circle_font = helv12b if len(c["label"]) > 2 else helv15b
+        bw = _bullet_w(c, r, circle_font, bar_font, hero_bullet_max_w)
+        bx = ax + aw + (5 if aw else 0) + bw // 2
+        _bullet(fb, draw, bx, hy, c, r, circle_font, bar_font, hero_bullet_max_w)
+        dx = bx + bw - bw // 2 + 5
         f_dest.draw(fb, dx, hy - f_dest.height // 2,
-                    _fit(f_dest, c["station"].upper(), x0 + col_w - dx - 8), BLACK)
+                    _fit_words(f_dest, c["station"].upper(), x0 + col_w - dx - 4), BLACK)
 
         merged = c["arrivals"]
         if not merged:
@@ -534,13 +640,17 @@ def _render_cards(fb, draw, cols, blurbs, weather_info, ebikes, rotation,
         x = margin + (i + 1) * (card_w + gap)
         card(x)
 
-        # Header row: bullet chip left, direction arrow pinned right.
-        chip_w = 18 + f_chip.text_w(c["label"])
+        # Header row: bullet chip left, direction arrow pinned right. The chip
+        # is already sized to its text, so a named rail branch needs no special
+        # case here -- only a cap so it can't run under the arrow.
+        arrow = ARROWS_SM.get(c["direction"])
+        chip_label = _fit(f_chip, _bar_label(c) if c.get("rail") else c["label"],
+                          card_w - 38 - (arrow.w if arrow else 0))
+        chip_w = 18 + f_chip.text_w(chip_label)
         draw.rectangle([x + 10, card_top + 8, x + 10 + chip_w, card_top + 28],
                        fill=BLACK)
         f_chip.centered(fb, x + 10 + chip_w // 2,
-                        card_top + 18 - f_chip.height // 2, c["label"], WHITE)
-        arrow = ARROWS_SM.get(c["direction"])
+                        card_top + 18 - f_chip.height // 2, chip_label, WHITE)
         if arrow:
             arrow.draw(fb, x + card_w - 10 - arrow.w,
                        card_top + 18 - arrow.h // 2, BLACK)

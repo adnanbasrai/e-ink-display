@@ -110,11 +110,14 @@ long minutesUntil(uint32_t t, time_t now) {
 
 // Find a stop by id (strips the N/S suffix, binary-searches STOP_NAMES, which
 // genstops.py sorts by id). Returns the entry (name + lat/lon) or nullptr.
+// Agency-prefixed rail ids ("L237") are looked up whole -- they're numeric
+// after the prefix and carry no direction suffix. Mirrors _base() in
+// emulator/stops.py; the two must agree or destinations diverge.
 const StopName* stopFind(const char* stopId) {
   if (!stopId || !stopId[0]) return nullptr;
   char base[8];
   size_t n = strlen(stopId);
-  if (n && (stopId[n - 1] == 'N' || stopId[n - 1] == 'S')) n--;
+  if (!agencyPrefix(stopId) && n && (stopId[n - 1] == 'N' || stopId[n - 1] == 'S')) n--;
   if (n >= sizeof(base)) n = sizeof(base) - 1;
   memcpy(base, stopId, n);
   base[n] = '\0';
@@ -236,6 +239,24 @@ void fitText(const HelvFont& f, char* s, int maxW) {
   for (int len = strlen(s); len > 0 && helvTextW(f, s) > maxW; ) s[--len] = '\0';
 }
 
+// Fit by dropping whole words before resorting to cutting letters.
+// "CROTON-HARMON" shortened to "CROTON" still names a place; chopped to
+// "CROTON-HAR" doesn't. Station names are head-weighted, so the leading word is
+// the one worth keeping. Mirrors _fit_words() in emulator/render.py.
+void fitWords(const HelvFont& f, char* s, int maxW) {
+  if (helvTextW(f, s) <= maxW) return;
+  for (;;) {
+    int cut = -1;
+    for (int i = (int)strlen(s) - 1; i > 0; i--)
+      if (s[i] == ' ' || s[i] == '-') { cut = i; break; }
+    if (cut <= 0) break;               // one word left: fall through to letters
+    s[cut] = '\0';
+    if (helvTextW(f, s) <= maxW) return;
+  }
+  fitText(f, s, maxW);
+}
+
+
 // Outline rectangle with a pixel thickness (EPD_DrawRectangle draws 1px).
 void rectOutline(int x0, int y0, int x1, int y1, int thick) {
   for (int i = 0; i < thick; i++)
@@ -254,13 +275,95 @@ struct ColData {
   Arrival arr[ARRIVALS_SHOWN];
   int n;
   bool tag;                      // merged column -> tag each time with its route
+  bool rail;                     // commuter rail -> named bar instead of a bullet
 };
+
+// ---- route bullets ----
+// The subway's bullet is a letter or digit in a circle. Commuter-rail branches
+// are named, not lettered ("HUDSON", "PORT WASH"), so they get a filled BAR
+// sized to the text instead -- which is also how the MTA signs them. The bar is
+// squared rather than rounded because the EPD primitives have no rounded-rect.
+// Mirrors the _bullet* helpers in emulator/render.py.
+
+constexpr int BULLET_PAD_X = 7;
+constexpr int BULLET_PAD_Y = 4;
+
+// Bar text for a rail column -- uppercased, the way the MTA signs a branch.
+// The backend already supplies the short form ("PORT WASH").
+void barLabel(const ColData& cd, char* out, size_t outSize) {
+  snprintf(out, outSize, "%s", cd.cc->label);
+  toUpper(out);
+}
+
+// Largest of `fonts` (largest-first) whose bar fits every rail label. Chosen
+// once across all columns so branch bars don't come out at a jumble of sizes --
+// the same reasoning as uniformStationFont().
+const HelvFont* uniformBulletFont(const ColData* cols, int nCols,
+                                  const HelvFont* const* fonts, int nFonts,
+                                  int maxW) {
+  for (int f = 0; f < nFonts; f++) {
+    bool all = true;
+    for (int c = 0; c < nCols && all; c++) {
+      if (!cols[c].rail) continue;
+      char lab[16];
+      barLabel(cols[c], lab, sizeof(lab));
+      if (helvTextW(*fonts[f], lab) + BULLET_PAD_X * 2 > maxW) all = false;
+    }
+    if (all) return fonts[f];
+  }
+  return fonts[nFonts - 1];
+}
+
+// Full width of a column's bullet, so callers can place it before drawing.
+int bulletW(const ColData& cd, int r, const HelvFont& barFont, int maxW) {
+  if (!cd.rail) return r * 2;
+  char lab[16];
+  barLabel(cd, lab, sizeof(lab));
+  fitText(barFont, lab, maxW - BULLET_PAD_X * 2);
+  return helvTextW(barFont, lab) + BULLET_PAD_X * 2;
+}
+
+// Draw a column's bullet centred on (cx, cy).
+void drawBullet(int cx, int cy, const ColData& cd, int r,
+                const HelvFont& circleFont, const HelvFont& barFont, int maxW) {
+  if (!cd.rail) {
+    EPD_DrawCircle(cx, cy, r, BLACK, 1);
+    helvCentered(circleFont, cx, cy - circleFont.height / 2, cd.cc->label, WHITE);
+    return;
+  }
+  char lab[16];
+  barLabel(cd, lab, sizeof(lab));
+  fitText(barFont, lab, maxW - BULLET_PAD_X * 2);
+  int w = helvTextW(barFont, lab) + BULLET_PAD_X * 2;
+  int h = barFont.height + BULLET_PAD_Y * 2;
+  EPD_DrawRectangle(cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2, BLACK, 1);
+  helvCentered(barFont, cx, cy - barFont.height / 2, lab, WHITE);
+}
 
 struct Blurbs {
   const char* items[MAX_COLS];
   char fallback[MAX_COLS][44];
   int n;
 };
+
+// Does this arrival survive the column's filters? `dn` is its resolved
+// destination name. The direction filter is what separates inbound from
+// outbound on commuter rail, where the stop id can't (see config.h).
+bool arrivalAllowed(const ColumnConfig& cc, const RouteArrivals& ra, uint8_t i,
+                    const char* dn) {
+  if (cc.nFilter > 0) {
+    bool ok = false;
+    for (uint8_t k = 0; k < cc.nFilter; k++)
+      if (cc.destFilter[k][0] && strcmp(cc.destFilter[k], dn) == 0) { ok = true; break; }
+    if (!ok) return false;
+  }
+  if (cc.dirFilter) {
+    static const char DIRC[4] = {'N', 'E', 'S', 'W'};
+    int d = travelDir(ra.stopId, ra.dest[i]);
+    if (d < 0 || DIRC[d] != cc.dirFilter) return false;
+  }
+  return true;
+}
 
 void prepareColumns(const RouteArrivals* routes, size_t nRoutes, time_t now,
                     const RouteAlert* alerts, ColData* cols, Blurbs& bl) {
@@ -272,6 +375,11 @@ void prepareColumns(const RouteArrivals* routes, size_t nRoutes, time_t now,
     cd.n = 0;
     cd.dir = -1;
     cd.tag = cc.nRoutes > 1;
+    // A column is commuter rail when its stop id is agency-namespaced; that's
+    // what decides bar-vs-circle. Taken from the first route, which defines the
+    // column's agency.
+    cd.rail = cc.nRoutes > 0 &&
+              agencyPrefix(routes[cc.routeIdx[0]].stopId) != 0;
 
     // Soonest train decides the destination label and the travel direction.
     long bestMin = 100;
@@ -283,12 +391,7 @@ void prepareColumns(const RouteArrivals* routes, size_t nRoutes, time_t now,
         long m = minutesUntil(ra.times[i], now);
         if (m < 0 || m > 99) continue;
         const char* dn = stopName(ra.dest[i]);
-        if (cc.nFilter > 0) {
-          bool ok = false;
-          for (uint8_t k = 0; k < cc.nFilter; k++)
-            if (cc.destFilter[k][0] && strcmp(cc.destFilter[k], dn) == 0) { ok = true; break; }
-          if (!ok) continue;
-        }
+        if (!arrivalAllowed(cc, ra, i, dn)) continue;
         if (m < bestMin) { bestMin = m; bestDest = dn; bestDestId = ra.dest[i]; }
       }
     }
@@ -303,13 +406,7 @@ void prepareColumns(const RouteArrivals* routes, size_t nRoutes, time_t now,
       for (uint8_t i = 0; i < ra.count; i++) {
         long m = minutesUntil(ra.times[i], now);
         if (m < 0 || m > 99) continue;
-        if (cc.nFilter > 0) {
-          const char* dn = stopName(ra.dest[i]);
-          bool ok = false;
-          for (uint8_t k = 0; k < cc.nFilter; k++)
-            if (cc.destFilter[k][0] && strcmp(cc.destFilter[k], dn) == 0) { ok = true; break; }
-          if (!ok) continue;
-        }
+        if (!arrivalAllowed(cc, ra, i, stopName(ra.dest[i]))) continue;
         int pos = cd.n < ARRIVALS_SHOWN ? cd.n : ARRIVALS_SHOWN - 1;
         if (cd.n == ARRIVALS_SHOWN && m >= cd.arr[pos].mins) continue;
         while (pos > 0 && cd.arr[pos - 1].mins > m) { cd.arr[pos] = cd.arr[pos - 1]; pos--; }
@@ -320,11 +417,13 @@ void prepareColumns(const RouteArrivals* routes, size_t nRoutes, time_t now,
     }
 
     if (cd.n == 0) {
+      // routeAlerts[] is parallel to ROUTES[], so index straight across rather
+      // than matching on the route id -- which repeats across agencies (LIRR's
+      // "1" is the Babylon Branch, not the 1 train).
       const char* blurb = nullptr;
       for (uint8_t ri = 0; ri < cc.nRoutes && !blurb; ri++) {
-        const char* route = routes[cc.routeIdx[ri]].route;
-        for (size_t a = 0; a < nRoutes; a++)
-          if (strcmp(alerts[a].route, route) == 0 && alerts[a].text[0]) { blurb = alerts[a].text; break; }
+        uint8_t r = cc.routeIdx[ri];
+        if (r < nRoutes && alerts[r].text[0]) blurb = alerts[r].text;
       }
       if (!blurb) {
         snprintf(bl.fallback[bl.n], sizeof(bl.fallback[0]),
@@ -365,15 +464,23 @@ void renderRefined(const ColData* cols, const Blurbs& bl, const WeatherInfo& wx,
   const HelvFont* sfont = uniformStationFont(labels, NUM_TRAIN_COLS, colW);
   int stationY = STATION_TOP + (STATION_BAND - sfont->height) / 2;
 
+  // The bullet stays centred over its destination and the arrow hangs off its
+  // left, so the arrow's width has to be reserved on BOTH sides or a wide
+  // branch bar pushes the arrow past the column edge.
+  const int bulletMaxW = colW - 2 * (ARROWS[0]->w + 6) - 8;
+  const HelvFont* barFonts[] = { &helv19b, &helv15b, &helv13b, &helv12b };
+  const HelvFont* barFont = uniformBulletFont(cols, NUM_TRAIN_COLS, barFonts, 4,
+                                              bulletMaxW);
+
   for (int col = 0; col < NUM_TRAIN_COLS; col++) {
     const ColData& cd = cols[col];
     int cx = (col + 1) * colW + colW / 2;
 
-    EPD_DrawCircle(cx, BULLET_CY, BULLET_R, BLACK, 1);
-    helvCentered(helv28b, cx, BULLET_CY - helv28b.height / 2, cd.cc->label, WHITE);
+    drawBullet(cx, BULLET_CY, cd, BULLET_R, helv28b, *barFont, bulletMaxW);
     if (cd.dir >= 0) {
       const SymBitmap& a = *ARROWS[cd.dir];
-      drawSymbol(a, cx - BULLET_R - 6 - a.w, BULLET_CY - a.h / 2, BLACK);
+      int half = bulletW(cd, BULLET_R, *barFont, bulletMaxW) / 2;
+      drawSymbol(a, cx - half - 6 - a.w, BULLET_CY - a.h / 2, BLACK);
     }
 
     char stbuf[48];
@@ -428,6 +535,14 @@ void renderHero(const ColData* cols, const Blurbs& bl, const WeatherInfo& wx,
   const int nCols = NUM_TRAIN_COLS > 0 ? NUM_TRAIN_COLS : 1;
   const int colW = SCREEN_W / nCols;
 
+  // A rail bar shares the header row with the destination, so cap it at about
+  // half the column and let the branch name truncate rather than crowd out
+  // where the train is going.
+  const int heroBulletMaxW = colW / 2;
+  const HelvFont* heroBarFonts[] = { &helv13b, &helv12b };
+  const HelvFont* heroBarFont = uniformBulletFont(cols, NUM_TRAIN_COLS,
+                                                  heroBarFonts, 2, heroBulletMaxW);
+
   // Weather compressed to a single strip across the top.
   if (wx.valid) {
     char temp[16];
@@ -474,16 +589,18 @@ void renderHero(const ColData* cols, const Blurbs& bl, const WeatherInfo& wx,
       aw = a.w;
       drawSymbol(a, ax, hy - a.h / 2, BLACK);
     }
-    int bx = ax + aw + (aw ? 7 : 0) + r;
-    EPD_DrawCircle(bx, hy, r, BLACK, 1);
+    // Subway bullets are a fixed circle; a rail bar takes whatever width its
+    // branch name needs, so measure first and place the destination after it.
     const HelvFont& lab = (strlen(cd.cc->label) > 2) ? helv12b : helv15b;
-    helvCentered(lab, bx, hy - lab.height / 2, cd.cc->label, WHITE);
+    int bw = bulletW(cd, r, *heroBarFont, heroBulletMaxW);
+    int bx = ax + aw + (aw ? 5 : 0) + bw / 2;
+    drawBullet(bx, hy, cd, r, lab, *heroBarFont, heroBulletMaxW);
 
-    int dx = bx + r + 6;
+    int dx = bx + bw - bw / 2 + 5;
     char dest[48];
     snprintf(dest, sizeof(dest), "%s", cd.station);
     toUpper(dest);
-    fitText(helv12b, dest, x0 + colW - dx - 8);
+    fitWords(helv12b, dest, x0 + colW - dx - 4);
     helvDraw(helv12b, dx, hy - helv12b.height / 2, dest, BLACK);
 
     if (cd.n == 0) {
@@ -576,10 +693,17 @@ void renderCards(const ColData* cols, const Blurbs& bl, const WeatherInfo& wx,
     x = margin + (col + 1) * (cardW + gap);
     rectOutline(x, cardTop, x + cardW, cardBot, 2);
 
-    int chipW = 18 + helvTextW(helv13b, cd.cc->label);
+    // The chip is already sized to its text, so a named rail branch needs no
+    // special case here -- only a cap so it can't run under the arrow.
+    int arrowW = cd.dir >= 0 ? ARROWS_SM[cd.dir]->w : 0;
+    char chip[16];
+    if (cd.rail) barLabel(cd, chip, sizeof(chip));
+    else         snprintf(chip, sizeof(chip), "%s", cd.cc->label);
+    fitText(helv13b, chip, cardW - 38 - arrowW);
+    int chipW = 18 + helvTextW(helv13b, chip);
     EPD_DrawRectangle(x + 10, cardTop + 8, x + 10 + chipW, cardTop + 28, BLACK, 1);
     helvCentered(helv13b, x + 10 + chipW / 2, cardTop + 18 - helv13b.height / 2,
-                 cd.cc->label, WHITE);
+                 chip, WHITE);
     if (cd.dir >= 0) {
       const SymBitmap& a = *ARROWS_SM[cd.dir];
       drawSymbol(a, x + cardW - 10 - a.w, cardTop + 18 - a.h / 2, BLACK);

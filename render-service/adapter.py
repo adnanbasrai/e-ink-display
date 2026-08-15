@@ -8,16 +8,22 @@ Device config shape (same as emulator/board_config.py, backend/src/config.js):
     citibike:{ station_id }        # already resolved, unlike board_config's lat/lon
 """
 
+import os
+import sys
 import types
 from urllib.parse import quote
 
-# The fixed MTA feed universe (same URLs as config.h / board_config.py).
-FEED_IRT = "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs"
-FEED_BDFM = "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-bdfm"
-FEED_NQRW = "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-nqrw"
-FEED_ACE = "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/nyct%2Fgtfs-ace"
-FEED_URLS = [FEED_IRT, FEED_BDFM, FEED_NQRW, FEED_ACE]
-FEED_ALERTS = "https://api-endpoint.mta.info/Dataservice/mtagtfsfeeds/camsys%2Fsubway-alerts"
+# The fixed MTA feed universe. Taken straight from the emulator's config rather
+# than copied, so adding a feed (LIRR, Metro-North) can't leave the preview
+# renderer one table behind the board.
+sys.path.insert(0, os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "emulator"))
+import board_config  # noqa: E402
+
+FEED_URLS = board_config.FEED_URLS
+FEED_AGENCY = board_config.FEED_AGENCY
+FEED_ALERTS = board_config.FEED_ALERTS
+FEED_ALERTS_BY_AGENCY = board_config.FEED_ALERTS_BY_AGENCY
 
 
 def _weather_url(lat, lon, tz):
@@ -35,7 +41,9 @@ def cfg_from_device(config):
     c.ROUTES = [(r["route"], r["stop_id"], int(r["feed"])) for r in config["routes"]]
     c.COLUMNS = [
         (col["label"], col.get("fallback", ""),
-         list(col["route_idx"]), list(col.get("dest_filter", [])))
+         list(col["route_idx"]), list(col.get("dest_filter", [])),
+         # Commuter rail only: the compass direction its trains must be headed.
+         str(col.get("dir_filter", "") or ""))
         for col in config["columns"]
     ]
     c.ARRIVALS_SHOWN = int(config.get("arrivals_shown", 3))
@@ -43,7 +51,9 @@ def cfg_from_device(config):
     c.LAYOUT = str(config.get("layout", "R")).upper()
     c.NUM_FEEDS = len(FEED_URLS)
     c.FEED_URLS = FEED_URLS
+    c.FEED_AGENCY = FEED_AGENCY
     c.FEED_ALERTS = FEED_ALERTS
+    c.FEED_ALERTS_BY_AGENCY = FEED_ALERTS_BY_AGENCY
 
     w = config.get("weather") or {}
     lat = w.get("lat", 40.7527)

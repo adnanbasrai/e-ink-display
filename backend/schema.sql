@@ -43,3 +43,19 @@ CREATE INDEX IF NOT EXISTS idx_cb_name ON citibike_stations(name);
 -- to draw on the panel, until the owner first signs in (claimed=1), after which it
 -- is nulled. pin_hash is what /api/login checks. For a hobby fleet this is an
 -- acceptable trade; a stricter design would have the device generate its own PIN.
+
+-- Read-only catalog of commuter-rail stations (seeded from the LIRR and
+-- Metro-North static GTFS). Separate from `stops` because the id spaces
+-- collide: LIRR stop 1 is Albertson, Metro-North stop 1 is Grand Central, and
+-- the subway has its own 1-prefixed ids. Stop ids here carry the agency prefix
+-- the board and renderer use ("L237", "M1").
+CREATE TABLE IF NOT EXISTS rail_stops (
+  stop_id TEXT PRIMARY KEY,   -- agency-prefixed, e.g. "M1"
+  agency  TEXT NOT NULL,      -- "L" = LIRR, "M" = Metro-North
+  name    TEXT NOT NULL,
+  lat     REAL,
+  lon     REAL,
+  routes  TEXT                -- space-separated branch route ids, e.g. "1 2 3"
+);
+CREATE INDEX IF NOT EXISTS idx_rail_name ON rail_stops(name);
+CREATE INDEX IF NOT EXISTS idx_rail_agency ON rail_stops(agency);

@@ -4,6 +4,7 @@ build/
 
 # emulator runtime caches (regenerated on first run)
 emulator/stops_cache.csv
+emulator/stops_cache_all.csv
 emulator/citibike_station.json
 __pycache__/
 *.pyc

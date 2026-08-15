@@ -1,9 +1,17 @@
 """Stop-ID -> station-name map, from the MTA static GTFS `stops.txt`.
 
 Used to turn a train's terminal stop id (the last stop in its trip) into a
-human destination like "Woodlawn" or "34 St-Hudson Yards". Fetched once and
-cached to disk so restarts are instant and work offline. Falls back to a small
-bundled map of the common IRT terminals if the download ever fails.
+human destination like "Woodlawn", "34 St-Hudson Yards" or "Poughkeepsie".
+Fetched once and cached to disk so restarts are instant and work offline. Falls
+back to a small bundled map of the common IRT terminals if the download fails.
+
+Three agencies share this table, and their stop ids collide -- LIRR "1" is
+Albertson, Metro-North "1" is Grand Central, and the subway's own "101" is Van
+Cortlandt Park. So every non-subway id is stored with a one-letter **agency
+prefix** ("L237", "M124"); subway ids stay bare. Subway ids are always numeric,
+which is what makes the prefix unambiguous to strip. Prefixes are applied by the
+feed parser (a route's feed index decides its agency) so the same key format
+reaches both this map and the firmware's `stopnames.h`.
 
 This is emulator-only convenience -- the display shows a nicer label; the data
 itself is the same the device sees.
@@ -17,9 +25,16 @@ import ssl
 import urllib.request
 import zipfile
 
-# MTA static GTFS (subway). Contains stops.txt with stop_id -> stop_name.
-_GTFS_ZIP = "https://rrgtfsfeeds.s3.amazonaws.com/gtfs_subway.zip"
-_CACHE = os.path.join(os.path.dirname(__file__), "stops_cache.csv")
+# MTA static GTFS, one zip per agency: (id prefix, url). Each contains a
+# stops.txt with stop_id / stop_name / stop_lat / stop_lon.
+_GTFS_SOURCES = [
+    ("", "https://rrgtfsfeeds.s3.amazonaws.com/gtfs_subway.zip"),
+    ("L", "http://web.mta.info/developers/data/lirr/google_transit.zip"),
+    ("M", "http://web.mta.info/developers/data/mnr/google_transit.zip"),
+]
+# Named for the combined (multi-agency) format -- a subway-only cache left by an
+# older build must not be reused, or every rail destination would come back "".
+_CACHE = os.path.join(os.path.dirname(__file__), "stops_cache_all.csv")
 
 _SSL = ssl.create_default_context()
 _SSL.check_hostname = False
@@ -62,10 +77,7 @@ def load_stop_names(log=print):
             log("stops: cache unreadable (%s), refetching" % e)
 
     try:
-        req = urllib.request.Request(_GTFS_ZIP, headers={"User-Agent": "x"})
-        raw = urllib.request.urlopen(req, timeout=30, context=_SSL).read()
-        z = zipfile.ZipFile(io.BytesIO(raw))
-        text = z.read("stops.txt").decode("utf-8")
+        text = fetch_combined(log)
         names = _parse_csv(text)
         try:
             with open(_CACHE, "w", encoding="utf-8") as f:
@@ -79,8 +91,36 @@ def load_stop_names(log=print):
         return dict(_FALLBACK)
 
 
+def fetch_combined(log=print):
+    """Download every agency's stops.txt and return one prefixed CSV.
+
+    Emitted with just the four columns anything downstream reads, because the
+    three agencies' stops.txt files don't agree on their other columns.
+    """
+    buf = io.StringIO()
+    w = csv.writer(buf, lineterminator="\n")
+    w.writerow(["stop_id", "stop_name", "stop_lat", "stop_lon"])
+    total = 0
+    for prefix, url in _GTFS_SOURCES:
+        req = urllib.request.Request(url, headers={"User-Agent": "x"})
+        raw = urllib.request.urlopen(req, timeout=60, context=_SSL).read()
+        text = zipfile.ZipFile(io.BytesIO(raw)).read("stops.txt").decode("utf-8-sig")
+        n = 0
+        for row in csv.DictReader(io.StringIO(text)):
+            w.writerow([prefix + row["stop_id"], row["stop_name"],
+                        row.get("stop_lat", ""), row.get("stop_lon", "")])
+            n += 1
+        total += n
+        log("stops: %s %d" % (prefix or "subway", n))
+    return buf.getvalue()
+
+
 def _base(stop_id):
-    return stop_id[:-1] if stop_id and stop_id[-1] in "NS" else stop_id
+    """Strip the subway's N/S direction suffix. Agency-prefixed (rail) ids are
+    numeric after the prefix and carry no suffix, so they're returned as-is."""
+    if not stop_id or stop_id[0].isalpha():
+        return stop_id
+    return stop_id[:-1] if stop_id[-1] in "NS" else stop_id
 
 
 def load_stop_coords():
