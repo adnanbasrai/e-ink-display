@@ -4,6 +4,17 @@ Auto-loaded each session. Captures how this project is built and the non-obvious
 decisions behind it, so a fresh session (e.g. on another computer) has the
 context. User-facing details live in `README.md` and `emulator/README.md`.
 
+## Read `PRINCIPLES.md` first
+
+**`PRINCIPLES.md` holds the rank-ordered design principles for this project and
+takes precedence over anything in this file.** CLAUDE.md describes how the thing
+is built today; PRINCIPLES.md decides how it should change. Read it before
+proposing a design, and when a decision trades one principle against another,
+say which one you let win and why. In short, in priority order: simplicity for
+the end user, their privacy, efficiency on the ESP32, privacy traded only to
+remove user burden, malleability while we're in testing, and an assumption of
+hundreds of devices in homes and hotel rooms.
+
 ## What this is
 
 An NYC **subway + weather e-ink door display**: firmware for an ELECROW
