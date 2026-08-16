@@ -215,11 +215,20 @@ void markReprovision() {
 
 void wifiPollReprovisionButton(WifiStatusFn onStatus) {
   static bool pinReady = false;
+  static bool seenReleased = false;   // a real press needs a released state first
   static uint32_t heldSince = 0;
   if (!pinReady) { pinMode(WIFI_BOOT_BTN_PIN, INPUT_PULLUP); pinReady = true; }
 
   bool held = (digitalRead(WIFI_BOOT_BTN_PIN) == LOW);
-  if (!held) { heldSince = 0; return; }
+  if (!held) { seenReleased = true; heldSince = 0; return; }
+  // GPIO0 is ALSO the USB-serial adapter's DTR line. Opening the port holds it
+  // LOW for as long as the port stays open, which by level alone is
+  // indistinguishable from someone holding the button down -- and it silently
+  // erased a working board's WiFi the moment a serial monitor attached. So
+  // require the pin to have been released at least once since boot: only a
+  // genuine press (released -> pressed) counts, never a line that has simply
+  // been low the whole time.
+  if (!seenReleased) return;
   if (!heldSince) { heldSince = millis(); return; }
   if (millis() - heldSince < WIFI_HOLD_MS) return;
 
